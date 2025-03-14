@@ -10,12 +10,13 @@ I will first test this data on original submissions, but will incorporate cleane
 
 Later steps may include integration of DNA and incidental sighting records and basic mapping scripts for species detections by year
 
+
 Link to github account
 ```{r}
-git config --global user.name "sidarlin"
-git config --global user.email "siobhan.darlington@gov.bc.ca"
-
-git remote add origin https://github.com/sidarlin/MMP_DataCollation_2025.git
+# git config --global user.name "sidarlin"
+# git config --global user.email "siobhan.darlington@gov.bc.ca"
+# 
+# git remote add origin https://github.com/sidarlin/MMP_DataCollation_2025.git
 
 ```
 
@@ -201,9 +202,10 @@ if ("Date_Time" %in% colnames(species_data)) {
   warning("Column 'Date_Time' not found in species_data.")
 }
   
+
   # Remove unwanted species
 species_data <- species_data %>%
-  filter(!Species %in% c("Mice, voles, shrews", "Cougar", "Bird", "Moose", "Deer", "Martes martes", "Lynx lynx", "NA"))
+  filter(!Species %in% c("Mice, voles, shrews", "Rat", "Cougar", "Bird", "Moose", "Deer", "Martes martes", "Lynx lynx", "Unknown/Indeterminate","-", "NA"))
 
 
 # Standardize species names to scientific names
@@ -268,6 +270,7 @@ species_data$Species <- recode(species_data$Species,
   "Red Squirrel" = "Sciurus vulgaris",
   "Red  Squirrel" = "Sciurus vulgaris",
   "Flying Squirrel" = "Glaucomys sabrinus",
+  "Squirrel" = "Sciurus sp.",
 
   # Marmot
   "Marmot" = "Marmota sp.",
@@ -295,6 +298,24 @@ master_species <- bind_rows(lapply(master_data, "[[", "species"))
 
 ``` 
 
+Check for NAs in the Date_Time column across projects
+```{r}
+na_date_counts <- master_species %>%
+  filter(is.na(Date_Time)) %>%
+  group_by(Project_name) %>%
+  summarise(NA_Count = n())
+
+print(na_date_counts)
+
+
+# Filter rows where Date_Time is NA
+na_date_rows <- master_species %>%
+  filter(is.na(Date_Time))
+
+# Display the resulting dataframe
+print(na_date_rows)
+
+```
 
 Load the SPI camera data files and standardize to the same formatting as above.
 
