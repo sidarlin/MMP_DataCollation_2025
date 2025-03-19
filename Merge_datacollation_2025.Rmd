@@ -353,7 +353,7 @@ species_data$Species_common_name <- recode(species_data$Species,
   "Mustela sp " = "Weasel sp.",
   "Weasels and Ermine" = "Weasel sp.",
   "Long-tailed weasel" = "Long-tailed weasel",
-  "Short-Tailed Weasel" = "Short-Tailed Weasel",
+  "Short-Tailed Weasel" = "Short-tailed weasel",
   "Ermine" = "Weasel sp.",
   "Neogale frenata" = "Long-tailed weasel",
   "Mustela frenata" = "Long-tailed weasel",
@@ -381,7 +381,7 @@ species_data$Species_common_name <- recode(species_data$Species,
   "Red squirrel" = "Red squirrel",
   "Red Squirrel" = "Red squirrel",
   "Red  Squirrel" = "Red squirrel",
-  "Flying Squirrel" = "Flying Squirrel",
+  "Flying Squirrel" = "Flying squirrel",
   "Squirrel" = "Squirrel sp.",
   "Tamiasciurus hudsonicus" = "American red squirrel",
 
@@ -414,25 +414,6 @@ master_species <- bind_rows(lapply(master_data, "[[", "species"))
 
 ``` 
 
-
-Check for NAs in the Date_Time column across projects
-```{r}
-na_date_counts <- master_species %>%
-  filter(is.na(Date_Time)) %>%
-  group_by(Project_name) %>%
-  summarise(NA_Count = n())
-
-print(na_date_counts)
-
-
-# Filter rows where Date_Time is NA
-na_date_rows <- master_species %>%
-  filter(is.na(Date_Time))
-
-# Display the resulting dataframe
-print(na_date_rows)
-
-```
 
 Create a table with project names and deployment years for metadata file
 ```{r}
@@ -549,7 +530,9 @@ species_spi_data$Species_common_name <- recode(species_spi_data$Species_common_n
   "Canada Lynx" = "Canada lynx",
   "Snowshoe Hare" = "Snowshoe hare",
   "Red Fox"  = "Red fox",
-  "Red Squirrel" = "Red squirrel"
+  "Red Squirrel" = "Red squirrel",
+  "Flying Squirrel" = "Flying squirrel",
+  "Short-Tailed Weasel" = "Short-tailed weasel"
   )
 
   # Verify unmatched stations
@@ -579,11 +562,6 @@ master_deployment[missing_cols] <- NA
 # Bind rows, keeping all columns from master_spi_deployment
 all_cam_deployments <- bind_rows(master_spi_deployment, master_deployment)
 
-# View result
-
-
-# master_spi_species$Species_scientific <- master_spi_species$Species
-
 #Join all species detections
 # Ensure all columns in master_spi_deployment are present in master_deployment
 missing_cols <- setdiff(names(master_spi_species), names(master_species))
@@ -600,6 +578,15 @@ setwd("C:/LocalR/Merge_datacollation_2025/Master_camera_data")
 write.csv(all_cam_deployments, file="All_cam_deployments_March2025.csv")
 write.csv(all_species_cams, file="All_camsp_detections_March2025.csv")
 
+
+### Add lat and long to all_species_cams
+all_species_cams <- all_species_cams %>%
+  left_join(
+    all_cam_deployments %>%
+      select(Station_ID, Latitude, Longitude) %>%
+      distinct(Station_ID, .keep_all = TRUE),  # Keep unique Station_ID-Latitude-Longitude
+    by = "Station_ID"
+  )
 ```
 
 
@@ -696,11 +683,8 @@ Create a basic interactive map from the camera species detections
 library(ggplot2)
 library(ggmap)
 library(dplyr)
-# install.packages("tmap")
 library(tmap)
-# install.packages("viridis")
 library(viridis)
-
 
 # Ensure Station_ID is the same type in both dataframes
 master_species_join <- master_species_meta %>%
@@ -754,20 +738,181 @@ tm_basemap("OpenStreetMap") +
   tm_layout(title = "Fisher Camera Detections in British Columbia")
 ```
 
+#############################################################################
+
+Let's add in the incidental data and the DNA data to the camera species list (with coordinates) and attach the metadata 
+
+Notes:
+- The DNA collation R script needs to be redone like the camera data script
+  There are a large number of NAs in the BC hydro file for "Start_date" and NULL and NA records for species.
+- Incidental data are missing complete dates (many are just years) and some BCTA records have no coordinates attached.
+
+```{r}
+## Add the DNA database
+setwd("C:/LocalR/Merge_datacollation_2025/DNA_records")
+
+DNA_data <- read.csv(file="DNA_presence_only_03-06.csv", header=T)
+
+# Standardize species names to scientific names
+DNA_data$Species_scientific <- recode(DNA_data$Species,
+"Lynx Canadensis" = "Lynx canadensis",
+"M-PEPE" = "Pekania pennanti",
+"M-PRLO" = "Procyon lotor",
+"M-MEME" = "Mephitis mephitis", 
+"M-SPGR" = "Spilogale gracilis",
+"M-GUGU" = "Gulo gulo",
+"M-MAAM" = "Martes americana",
+"M-MACU" = "Martes caurina",
+"M-MUER-HA" = "Mustela haidarum",
+"M-MUER" = "Mustela erminea",
+"M-MUER-AN" = "Mustela erminea",
+"M-MUNI" = "Mustela nivalis",
+"M-MUFR" = "Neogale frenata",
+"M-NEVI" = "Neovison vison",
+"M-TATA" = "Taxidea taxus",
+"M-LYRU" = "Lynx rufus",
+"M-LYCA" = "Lynx canadiensis",
+"M-CALA"= "Canis latrans",
+"M-VUVU" = "Vulpes vulpes",
+"M-LOCA" = "Lontra canadensis"
+ )
+
+# Standardize species names to scientific names
+DNA_data$Species_common_name <- recode(DNA_data$Species,
+                                           
+ "Lynx Canadensis" = "Canada lynx",
+"M-PEPE" = "Fisher",
+"M-PRLO" = "Raccoon",
+"M-MEME" = "Striped skunk", 
+"M-SPGR" = "Western spotted skunk",
+"M-GUGU" = "Wolverine",
+"M-MAAM" = "American marten",
+"M-MACU" = "Pacific marten",
+"M-MUER-HA" = "Haida ermine",
+"M-MUER" = "Short-tailed weasel",
+"M-MUER-AN" = "Short-tailed weasel",
+"M-MUNI" = "Least weasel",
+"M-MUFR" = "Long-tailed weasel",
+"M-NEVI" = "American mink",
+"M-TATA" = "American badger",
+"M-LYRU" = "Bobcat",
+"M-LYCA" = "Canada lynx",
+"M-CALA"= "Coyote",
+"M-VUVU" = "Red fox",
+"M-LOCA" = "North American river otter",
+"FLSQ" = "Flying squirrel",
+
+  "Martes americana" = "American marten",
+  "Martes caurina" = "Pacific marten",
+  "Gulo gulo" = "Wolverine",
+  "Lynx canadiensis" = "Canada lynx",
+  "Lynx canadensis" = "Canada lynx",
+  "Lynx rufus" = "Bobcat",
+  "Neovison vison" = "American mink",
+  "Neogale vison" = "American mink",
+  "Lepus americanus" = "Snowshoe hare",
+  "Striped Skunk" = "Striped skunk",
+  "Spilogale gracilis" = "Western spotted skunk",
+  "Mephitis mephitis" = "Striped skunk",
+  "Canis latrans" = "Coyote",
+  "Neogale frenata" = "Long-tailed weasel",
+  "Mustela frenata" = "Long-tailed weasel",
+  "Mustela nivalis" = "Least weasel",
+  "Mustela erminea" = "Eurasian ermine",
+  "Vulpes vulpes" = "Red fox",
+  "Urocyon cinereoargenteus" = "Gray fox",
+  "Taxidea taxus" = "American badger",
+  "Pekania pennanti" = "Fisher",
+  "Tamiasciurus hudsonicus" = "American red squirrel",
+  "Lontra canadensis" = "North American river otter",
+  "Procyon lotor" = "Raccoon",
+  "Porcupine" = "North American porcupine", 
+  "Erethizon dorsatum" = "North American porcupine"
+)
+
+table(DNA_data$Species_common_name)
+
+## remove any duplicates
+
+
+```
+
+
+
+Get the project start and end dates
+```{r}
+DNA_deployment <-DNA_data %>%
+  mutate(
+    Start_Deployment_date = as.Date(Start_Deployment_date),
+    End_Deployment_date = as.Date(End_Deployment_date)
+  )
+
+# Summarize start and end years by Project_ID
+DNA_project_year_summary <- DNA_deployment %>%
+  mutate(
+    Start_Year = format(Start_Deployment_date, "%Y"),
+    End_Year = format(End_Deployment_date, "%Y")
+  ) %>%
+  group_by(Project_name) %>%
+  summarise(
+    Project_Start_Year = min(Start_Year, na.rm = TRUE),
+    Project_End_Year = max(End_Year, na.rm = TRUE)
+  )
+
+# View the summary
+print(DNA_project_year_summary)
+```
+
+
+```{r}
+
+#Join camera data and DNA data
+# Ensure all columns in master_spi_deployment are present in master_deployment
+missing_cols <- setdiff(names(DNA_data), names(master_species_filtered))
+master_species_filtered[missing_cols] <- NA
+
+# Bind rows, keeping all columns from master_spi_species
+all_cams_dna_species <- bind_rows(master_species_filtered, DNA_data)
+
+
+#load metadata if you haven't already
+setwd("C:/LocalR/Merge_datacollation_2025")
+metadata <- read.csv("MMP_Project_Metadata.csv", header=T)
+
+cams_dna_sp_meta <- all_cams_dna_species %>%  left_join(metadata, by = "Project_name")
+
+write.csv(cams_dna_sp_meta, file="Cam_DNA_species_March2025.csv")
+
+table(cams_dna_sp_meta$Species_common_name)
+
+```
+
+Extract species specific data observations as its own csv file with latitude and longitude associated 
+
+```{r}
+# Extract coordinates
+species_map_data <- species_map_data %>%
+  mutate(Latitude = st_coordinates(.)[, 2],  # Extract Y (Latitude)
+         Longitude = st_coordinates(.)[, 1]) %>%  # Extract X (Longitude)
+  st_drop_geometry()  # Remove geometry column
+
+# View the new dataframe
+head(species_map_data)
+
+## Export
+setwd("C:/LocalR/Merge_datacollation_2025/Output_camera_detections")
+write.csv(species_map_data, file="Fisher_cam_detections_temp_March2025.csv")
+```
+
 Let's map Marten camera detections by data sharing permissions
 ```{r}
-# Load required libraries
-library(tmap)
-library(sf)
-library(dplyr)
+cams_dna_sp_meta <- cams_dna_sp_meta %>%
+  mutate(across(everything(), ~ iconv(., from = "", to = "UTF-8", sub = " ")))  # Replace invalid characters
+Encoding(cams_dna_sp_meta$Species_common)  # Check encoding
+unique(cams_dna_sp_meta$Species_common_name)    # Look for strange characters
 
-# master_species_join <- master_species_join %>%
-#   mutate(across(everything(), ~ iconv(., from = "", to = "UTF-8", sub = " ")))  # Replace invalid characters
-# Encoding(master_species_join$Species_scientific)  # Check encoding
-# unique(master_species_join$Species_scientific)    # Look for strange characters
-# 
-# write.csv(master_species_join, "temp_data.csv", row.names = FALSE, fileEncoding = "UTF-8")
-# master_species_join <- read.csv("temp_data.csv", stringsAsFactors = FALSE, encoding = "UTF-8")
+write.csv(cams_dna_sp_meta, "cam_dna_temp_data.csv", row.names = FALSE, fileEncoding = "UTF-8")
+cams_dna_sp_meta <- read.csv("cam_dna_temp_data.csv", stringsAsFactors = FALSE, encoding = "UTF-8")
 
 
 # Define custom colors
@@ -781,14 +926,14 @@ custom_shapes <- c("Level1" = 16,  # Filled circle
                    "Level3" = 18)  # Filled diamond
 
 # Filter for Marten species, remove NA coordinates, and select necessary columns
-species_map_data <- master_species_join %>%
+species_map_data <- cams_dna_sp_meta %>%
   filter(Species_scientific %in% c("Martes caurina", "Martes sp.", "Martes americana")) %>%
   drop_na(Latitude, Longitude, Data_Sharing_Categorization) %>%  # Ensure no NAs in shape field
   mutate(
     Year_Study_Start = as.character(Year_Study_Start),  # Convert to character to avoid comma formatting
     Year_Study_End = as.character(Year_Study_End)  # Convert to character to avoid comma formatting
   ) %>%
-  select(-c(Species.x, Species.y, Study_Area, Description, 
+  select(-c(Species.x, Species.y, Study_Area, Description, Start_Deployment_date, End_Deployment_date, Sex, Age, Habitat_type, Comments, Trap_type, Sample_ID, SPI_Project_ID.y, SPI_Project_name, Animal_ID, 
             Submission_File_link, Submission_File_name, Data_owner_names, 
             Owner_email, Data._Sharing_Notes, Date_Time, Count, Date, Station_ID, Wildtrax_ID, SPI_Project_Name)) %>%  # Remove specified columns
   st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326)  # Convert to sf spatial object
@@ -806,26 +951,9 @@ tm_basemap("OpenStreetMap") +
   tm_dots(col = "Species", shape = "Data_Sharing_Categorization", 
           size = 0.6, palette = custom_colors, shape.palette = custom_shapes, 
           title.shape = "Data Permissions") +  # Shape legend title is working
-  tm_layout(title = "Marten Camera Detections in British Columbia",
+  tm_layout(title = "Marten Camera and DNA Detections in British Columbia",
             legend.outside = TRUE) +  # Move legend outside for better visibility
   tm_view(set.zoom.limits = c(5, 7))  # Adjust zoom limits
-
-
-```
-
-#############################################################################
-
-Let's add in the incidental data and the DNA data to map presence only 
-
-- The DNA collation R script needs to be redone like the camera data script
-  There are a large number of NAs in the BC hydro file for "Start_date" and NULL and NA records for species.
-- Incidental data are missing complete dates (many are just years) and some BCTA records have no coordinates attached.
-
-```{r}
-## Add the DNA database
-setwd("C:/LocalR/Merge_datacollation_2025/DNA_records")
-
-DNA_data <- read.csv(file="DNA_data_MDB_03-06.csv", header=T)
 ```
 
 
