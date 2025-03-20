@@ -954,13 +954,227 @@ tm_basemap("OpenStreetMap") +
   tm_layout(title = "Marten Camera and DNA Detections in British Columbia",
             legend.outside = TRUE) +  # Move legend outside for better visibility
   tm_view(set.zoom.limits = c(5, 7))  # Adjust zoom limits
+
+```
+
+Make a cam and DNA fisher map
+```{r}
+cams_dna_sp_meta <- cams_dna_sp_meta %>%
+  mutate(across(everything(), ~ iconv(., from = "", to = "UTF-8", sub = " ")))  # Replace invalid characters
+Encoding(cams_dna_sp_meta$Species_common)  # Check encoding
+unique(cams_dna_sp_meta$Species_common_name)    # Look for strange characters
+
+write.csv(cams_dna_sp_meta, "cam_dna_temp_data.csv", row.names = FALSE, fileEncoding = "UTF-8")
+cams_dna_sp_meta <- read.csv("cam_dna_temp_data.csv", stringsAsFactors = FALSE, encoding = "UTF-8")
+
+
+# Define custom colors
+custom_colors <- c("Martes caurina" = "#00796B",  # Dark Teal
+                   "Martes sp." = "#D84315",      # Dark Orange
+                   "Martes americana" = "#6F249C")  # Dark Purple
+
+# Define custom shapes
+custom_shapes <- c("Level1" = 16,  # Filled circle
+                   "Level2" = 17,  # Filled triangle
+                   "Level3" = 18)  # Filled diamond
+
+# Filter for Marten species, remove NA coordinates, and select necessary columns
+species_map_data <- cams_dna_sp_meta %>%
+  filter(Species_scientific %in% c("Martes caurina", "Martes sp.", "Martes americana")) %>%
+  drop_na(Latitude, Longitude, Data_Sharing_Categorization) %>%  # Ensure no NAs in shape field
+  mutate(
+    Year_Study_Start = as.character(Year_Study_Start),  # Convert to character to avoid comma formatting
+    Year_Study_End = as.character(Year_Study_End)  # Convert to character to avoid comma formatting
+  ) %>%
+  select(-c(Species.x, Species.y, Study_Area, Description, Start_Deployment_date, End_Deployment_date, Sex, Age, Habitat_type, Comments, Trap_type, Sample_ID, SPI_Project_ID.y, SPI_Project_name, Animal_ID, 
+            Submission_File_link, Submission_File_name, Data_owner_names, 
+            Owner_email, Data._Sharing_Notes, Date_Time, Count, Date, Station_ID, Wildtrax_ID, SPI_Project_Name)) %>%  # Remove specified columns
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326)  # Convert to sf spatial object
+
+
+# Rename Species_scientific to Species in the dataset
+species_map_data <- species_map_data %>%
+  rename(Species = Species_scientific)
+
+# Interactive map with OpenStreetMap
+tmap_mode("view")  # Enable interactive view mode
+
+tm_basemap("OpenStreetMap") +
+  tm_shape(species_map_data) +
+  tm_dots(col = "Species", shape = "Data_Sharing_Categorization", 
+          size = 0.6, palette = custom_colors, shape.palette = custom_shapes, 
+          title.shape = "Data Permissions") +  # Shape legend title is working
+  tm_layout(title = "Marten Camera and DNA Detections in British Columbia",
+            legend.outside = TRUE) +  # Move legend outside for better visibility
+  tm_view(set.zoom.limits = c(5, 7))  # Adjust zoom limits
 ```
 
 
+Add incidental data from spi (2023 data with incorrect count until Sultana can get us new extraction)
+
 ```{r}
 ## Add Incidentals
-setwd("C:/LocalR/Merge_datacollation_2025/Incidental_observations")
+setwd("C:/LocalR/Merge_datacollation_2025/Input_incidental_sheets")
 
-inci_data <- read.csv(file="Incidental_data_MDB_09_04_2024.csv", header=T)
+inci_spi_data <- read.csv(file="SPI_Incidentals_Oct2023.csv", header=T)
+
+# Column mapping
+column_mapping <- c(
+  "PROJECT_NAME" = "SPI_Project_name",
+  "PROJECT_ID" = "SPI_Project_ID",
+  "DESIGN_COMPONENT_LABEL" = "Station_ID",
+  "CAMERA_LABEL" = "Station_ID",
+  "STATION_LATITUDE" = "Latitude",
+  "STATION_LONGITUDE" = "Longitude",
+  "LATITUDE" = "Latitude",
+  "LONGITUDE" = "Longitude",
+  "VISIT_START_DATE" = "Start_Deployment_date",
+  "VISIT_END_DATE" = "End_Deployment_date",
+  "TRAP_MODEL" = "Camera_model",
+  "TRAP_MAKE_NAME_CD" = "Camera_make", 
+  "BAIT_LURE_TYPE" = "Bait_lure",
+  "TRAP_TYPE" = "Target_feature",
+  "OBSERVED_NUMBER" = "Count",
+  "OBSERVATION_YEAR" = "Year",
+  "OBSERVATION_DATETIME" = "Date_Time",
+  "TRAP_HEIGHT" = "Camera_height",
+  "VISIT_TIME_SPAN" = "Camera_days",
+  "SPECIES_ENGLISH_NAME" = "Species_common_name",
+  "SCIENTIFIC_NAME" = "Species_scientific" 
+)
+
+# Function to standardize column names
+standardize_columns <- function(df) {
+  colnames(df) <- recode(colnames(df), !!!column_mapping)  
+  return(df)
+}
+
+#Apply to incidental SPI sheet
+inci_spi_data <- inci_spi_data %>% standardize_columns()
+
+
+# Standardize species names to scientific names
+inci_spi_data$Species_common_name <- recode(inci_spi_data$Species_common_name,
+  # Marten species
+  "marten" = "Marten sp.",
+  "Marten" = "Marten sp.",
+  "American Marten" = "American marten",
+  "Martes americana" = "American marten",
+  "Pacific Marten" = "Pacific marten",
+  "Martes caurina" = "Pacific marten",
+  
+  # Bobcat & Lynx
+  "bobcat" = "Bobcat",
+  "lynx" = "Canada lynx",
+  "Lynx" = "Canada lynx",
+  "Lynx canadiensis" = "Canada lynx",
+  "Canada Lynx" = "Canada lynx",
+  "Bobcat/Lynx" = "Lynx sp.",
+
+  #Mink
+  "American Mink" = "American mink", 
+
+  # Hare & Rabbit
+  "Snowshoe hare" = "Snowshoe hare",
+  "Snowshoe Hare" = "Snowshoe hare",
+  "Rabbits and hares" = "Hare sp.",
+
+  # Wolverine
+  "wolverine" = "Wolverine",
+  "Wolverine, Luscus Subspecies" = "Wolverine",
+  "Wolverine, Vancouverensis Subspecies" = "Wolverine",
+
+  # Skunk
+  "Skunk" = "Striped skunk",
+  "Striped skunk" = "Striped skunk",
+  "Striped Skunk" = "Striped skunk",
+  "Western Spotted Skunk" = "Western spotted skunk",
+  
+
+  # Coyote
+  "coyote" = "Coyote",
+  "Coyote" = "Coyote",
+
+  # Weasels
+  "weasel" = "Weasel sp.",
+  "Mustela sp" = "Weasel sp.",
+  "Mustela sp " = "Weasel sp.",
+  "Weasels and Ermine" = "Weasel sp.",
+  "Long-tailed Weasel" = "Long-tailed weasel",
+ "Long-Tailed Weasel" = "Long-tailed weasel",
+  "Short-tailed Weasel" = "Short-tailed weasel",
+  "Short-Tailed Weasel" = "Short-tailed weasel",
+ "Long-tailed weasel, altifrontalis subspecies" = "Long-tailed weasel",
+ 
+  # Fox
+  "Gray Fox" = "Gray fox",
+  "Red Fox" = "Red fox",
+  "fox" = "Fox sp.",
+
+  # Badger
+  "American Badger" = "American badger",
+
+  # Fisher
+  "Fisher" = "Fisher",
+
+  # Squirrel
+ "American Red Squirrel" = "American red squirrel",
+  "Red squirrel" = "Red squirrel",
+  "Red Squirrel" = "Red squirrel",
+  "Red  Squirrel" = "Red squirrel",
+  "Flying Squirrel" = "Flying squirrel",
+  "Squirrel" = "Squirrel sp.",
+
+  # Marmot
+  "Marmot" = "Marmot sp.",
+  "Hoary Marmot" = "Hoary marmot",
+
+  # Otter
+  "North American River Otter" = "North American river otter",
+"North American River Otter pacifica" = "North American river otter",
+
+  # Other species
+"Raccoon pacificus" = "Raccoon",
+  "North American Porcupine" = "North American porcupine", 
+)
+
+inci_spi_data$Data_Sharing_Categorization <- "Government"
+inci_spi_data$Data_type <- "Incidental"
+```
+
+Attach the Camera/DNA with metadata sheet
+
+```{r}
+# cams_dna_sp_meta$SPI_Project_ID <- cams_dna_sp_meta$SPI_Project_ID.x
+# 
+# # Remove unwanted columns from cams_dna_sp_meta
+# cams_dna_sp_meta <- cams_dna_sp_meta %>%
+#   select(-c(SPI_Project_ID.x, SPI_Project_ID.y))
+
+# Identify common columns between the two dataframes
+common_cols <- intersect(names(inci_spi_data), names(cams_dna_sp_meta))
+
+# Retain only the common columns in inci_spi_data
+inci_spi_data <- inci_spi_data[, common_cols, drop = FALSE]
+
+# Bind rows, keeping only the common columns
+all_sources_species <- bind_rows(cams_dna_sp_meta, inci_spi_data)
+
+# Remove columns where all characters are uppercase
+all_sources_species <- all_sources_species %>%
+  select(-which(grepl("^[A-Z_]+$", names(.))))
+
+
+# Remove unwanted columns from cams_dna_sp_meta
+all_sources_species <- all_sources_species %>%
+  select(-c(Species.x, Species.y))
+
+
+# Remove rows where Species_common_name is "Mule deer" or "White-tailed deer"
+all_sources_species <- all_sources_species %>%
+  filter(!(Species_common_name %in% c("Mule deer", "White-tailed deer")))
+
+write.csv(all_sources_species, file="All_sources_species_March2025.csv")
+
 ```
 
