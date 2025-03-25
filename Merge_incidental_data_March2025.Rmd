@@ -1,0 +1,333 @@
+---
+title: "Merge_incidental_data_March2025"
+output: html_document
+date: "2025-03-19"
+---
+
+
+```{r pressure, echo=FALSE}
+# Load required libraries
+library(readxl)
+library(sf)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(readr)
+library(purrr)
+
+# Set working directory
+setwd("C:/LocalR/Merge_datacollation_2025/Input_incidental_sheets")
+
+# Load incidental data
+# incidentals <- read.csv(file="Incidental_data_MDB_08_16_2024.csv", header=T)
+
+# Function to standardize date format
+standardize_date <- function(date_column) {
+  as.Date(date_column, format = "%Y-%m-%d")
+}
+
+# Load fisher incidentals
+df_fisher <- read_excel("Fisher_incidental_obs_JUL2024.xlsx") %>% 
+  select(Observer, Source, Date, Latitude_DD = Latitude, Longitude_DD = Longitude, 
+         Comments = Notes, Type_of_record = Type, Spatial_accuracy = Location_precision_km) %>% 
+  mutate(Observer_ID = paste0(Observer, "_", Source),
+         Species = "Pekania pennanti",
+         Date = standardize_date(Date),
+         Year = format(Date, "%Y")) %>% 
+  select(-Observer, -Source) %>% 
+  mutate(across(c(Latitude_DD, Longitude_DD), as.numeric))
+
+
+# Convert Latitude_DD and Longitude_DD to numeric, handling any non-numeric values
+df_fisher <- df_fisher %>%
+  mutate(across(c(Latitude_DD, Longitude_DD), ~ as.numeric(.), .names = "fixed_{.col}"))
+
+df_fisher$Project_name <- "BCTA incidentals"
+
+# Ensure Date columns in both dataframes are in Date format
+incidentals <- incidentals %>%
+  mutate(Date = as.Date(Date, format = "%Y-%m-%d"))
+
+df_fisher <- df_fisher %>%
+  mutate(Date = as.Date(Date, format = "%Y-%m-%d"))
+
+##############################################
+
+df_marten <- read_excel("HF_marten_samples_2013.xlsx", sheet = "Raw data") 
+# Ensure UTM coordinates are numeric
+df_marten$UTM_easting <- as.numeric(df_marten$UTM_easting)
+df_marten$UTM_northing <- as.numeric(df_marten$UTM_northing)
+
+# Check if UTM columns and zone exist and are valid
+df_marten <- df_marten %>%
+  filter(!is.na(UTM_easting) & !is.na(UTM_northing) & !is.na(UTM_zone)) %>%
+  mutate(UTM_zone = as.integer(UTM_zone),  # Ensure UTM_zone is integer
+         crs_utm = 32600 + UTM_zone)  # Assign CRS based on UTM_zone
+
+# Ensure that the CRS is assigned based on UTM zone
+df_marten_sf <- st_as_sf(df_marten, coords = c("UTM_easting", "UTM_northing"), crs = unique(df_marten$crs_utm)[1])
+
+# Verify if the CRS is correctly assigned
+if (is.na(st_crs(df_marten_sf))) {
+  stop("CRS is missing after creating sf object.")
+}
+
+# Transform the CRS from UTM to WGS84 (EPSG:4326)
+df_marten_sf <- st_transform(df_marten_sf, crs = 4326)
+
+# Extract Longitude and Latitude from the transformed sf object
+coordinates <- st_coordinates(df_marten_sf)
+
+# Ensure Longitude and Latitude are numeric
+df_marten$Longitude_DD <- as.numeric(coordinates[, 1])
+df_marten$Latitude_DD <- as.numeric(coordinates[, 2])
+
+
+df_marten <- df_marten %>%
+  mutate(Species = "Mustela haidarum", 
+         Observer_ID = paste0(Submitters_name, " ", Necropsied_by),
+         Type_of_record = "DE",
+         Source = "Archived files WLRS",
+         Date = standardize_date(paste0(Death_year,"-", Death_month, "-",Death_day)),
+         Year = format(Date, "%Y")) %>%
+  select(Species, Latitude_DD, Longitude_DD, Type_of_record, Observer_ID, 
+         Spatial_accuracy = `Location precision`, Date, Year, Source, Comments = General_comments, Sex, Age)
+
+
+df_marten$Project_name <- "Haida Ermine Project"
+# Merge Haida Ermine project data into master dataset
+incidentals <- bind_rows(df_fisher, df_marten)
+
+###########################################################
+# Load Ecology of Decay data
+df_fisher_dens <- read_excel("fisherdens_2012.xlsx") %>% 
+  st_as_sf(coords = c('UTM10_easting', 'UTM10 northing'), crs = " +proj=utm +zone=10", remove = FALSE) %>% 
+  st_transform(crs = 4326) %>% 
+  mutate(Longitude_DD = st_coordinates(.)[,1], 
+         Latitude_DD = st_coordinates(.)[,2], 
+         Species = "Pekania pennanti", 
+         Spatial_accuracy = 0, 
+         Sex = "Female", 
+         Age = "Adult", 
+         Type_of_record = "Observation in Den",
+         Date = standardize_date(Date_of_survey),
+         Year = format(Date, "%Y")) %>% 
+  select(Latitude_DD, Longitude_DD, Species, Date, Year, 
+         Observer_ID = Surveyor, Sex, Age, Comments = Notes) %>% 
+  st_drop_geometry()
+
+df_fisher_dens$Project_name <- "Fisher denning project"
+
+# Merge Ecology of Decay data into master dataset
+incidentals <- bind_rows(incidentals, df_fisher_dens)
+
+#########################
+
+
+# Read and process Helen's data
+Helen <- read_excel("Helen's Jordan data for Rich's mesocarnivore project Fall 2017.xlsx", sheet = "Data_summary") %>%
+  st_as_sf(coords = c('UTM_easting', 'UTM_northing'), crs = "+proj=utm +zone=10", remove = FALSE) %>%
+  st_transform(crs = 4326) %>%
+  mutate(
+    Longitude = st_coordinates(.)[, 1],
+    Latitude = st_coordinates(.)[, 2]
+  )
+
+# Reshape data and clean column names
+Helen <- Helen %>%
+  pivot_longer(cols = c('Marten', 'Ermine', 'Mink'), names_to = 'Species', values_to = 'Count') %>%
+  select(
+    Species,
+    Latitude_DD = Latitude,
+    Longitude_DD = Longitude,
+    Start_Deployment_date = Start_Deployment_date,
+    End_Deployment_date = End_Deployment_date,
+    Date = Start_Deployment_date, 
+    Year= Year,
+    Type_of_record = `Type of record`
+  ) %>%
+   # Convert to proper date and year formats
+  mutate(
+    Start_Deployment_date = as.Date(Start_Deployment_date, format = "%Y-%m-%d"),  # Convert to Date format
+    End_Deployment_date = as.Date(End_Deployment_date, format = "%Y-%m-%d"),      # Convert to Date format
+    Date = as.Date(Start_Deployment_date, format = "%Y-%m-%d"),                  # Ensure Date is in yyyy-mm-dd
+    Year = format(as.Date(Year), "%Y")                                           # Extract just the year (yyyy)
+  ) %>%
+  st_drop_geometry()
+
+# Recode species names
+Helen$Species <- recode(
+  Helen$Species,
+  Marten = "Martes americana",
+  Ermine = "Mustela erminea",
+  Mink = "Neogale vison"
+)
+
+# Add additional columns
+Helen$Observer_ID <- "Jordan Mesocarnivores-Helen"
+Helen$Spatial_accuracy <- 0
+Helen$Date <- as.Date(Helen$Date)
+Helen$Project_name <- "Jordan River Mesocarnivores"
+
+###################
+
+weasl <- read.csv(file="Least_weasel_obs_2008.csv", header=T)
+
+# Convert UTM to Latitude/Longitude if required columns exist
+if (all(c("UTM_easting", "UTM_northing", "UTM_zone") %in% colnames(weasl))) {
+  weasl <- weasl %>%
+    filter(!is.na(UTM_easting) & !is.na(UTM_northing) & !is.na(UTM_zone)) %>%
+    mutate(UTM_zone = as.integer(UTM_zone),  # Ensure UTM_zone is numeric
+           EPSG_code = 32600 + UTM_zone)  # Northern Hemisphere UTM zones (adjust if needed)
+  
+  # Convert to sf object with correct CRS
+  weasl_sf <- st_as_sf(weasl, coords = c("UTM_easting", "UTM_northing"), crs = weasl$EPSG_code[1]) 
+
+  # Transform to WGS84 (Latitude/Longitude)
+  weasl_sf <- st_transform(weasl_sf, crs = 4326)
+
+  # Extract lat/lon
+  weasl$Longitude <- st_coordinates(weasl_sf)[, 1]
+  weasl$Latitude <- st_coordinates(weasl_sf)[, 2]
+
+  # Ensure Latitude and Longitude are numeric
+  weasl <- weasl %>%
+    mutate(
+      Latitude = as.numeric(Latitude),
+      Longitude = as.numeric(Longitude)
+    )
+}
+
+weasl$Date <- as.Date(weasl$Date, format="%Y-%m-%d")
+weasl$Project_name <- "Rich Weir least weasel observations"
+
+####################
+
+## Add cleaned triangulation data, wolverine records, museum records
+
+triang <- read.csv(file="triangulations_MT_cleaned.csv", header=T)
+triang$Date <- as.Date(triang$Date, format="%Y-%m-%d")
+triang$Project_name <- "Mesocarnivore Team Fisher Tracking"
+museum <- read.csv(file="Museum_records_upto2007.csv", header=T)
+museum$Date <- as.Date(museum$Date, format="%Y-%m-%d")
+museum$Project_name <- "Royal BC Museum"
+wolv <- read.csv(file="Krystal Rancourt-Data.csv", header=T)
+wolv$Date <- as.Date(wolv$Date, format="%Y-%m-%d")
+wolv$Project_name <- "Krystal Rancourt Wolverine Observations"
+wolv_watch <- read.csv(file="Wolverine_watch_2022-24.csv", header=T)
+wolv_watch$Date <- as.Date(wolv_watch$Date, format="%Y-%m-%d")
+wolv_watch$Project_name <- "Wolverine Watch Program"
+# ---- Merging Data ----
+
+# Ensure correct data types for merging
+incidentals$Latitude <- as.numeric(incidentals$Latitude_DD)
+incidentals$Longitude <- as.numeric(incidentals$Longitude_DD)
+incidentals$Spatial_accuracy <- as.numeric(incidentals$Spatial_accuracy)  # Ensure consistency
+
+
+# Merge Helen's data and Fisher's incidentals into the master dataset
+incidentals <- bind_rows(incidentals, Helen, weasl, triang, museum, wolv, wolv_watch)
+
+# View the final dataset
+head(incidentals)
+
+
+##Correct spelling of Pekania pennanti
+incidentals$Species <- ifelse(incidentals$Species =="Pekania penannanti", "Pekania pennanti", incidentals$Species)
+incidentals$Data_type <- "Incidental"
+incidentals$Count <- 1
+incidentals$Species_scientific <- incidentals$Species
+
+incidentals$Species_common_name <- recode(incidentals$Species,
+
+  "Martes americana" = "American marten",
+  "Martes caurina" = "Pacific marten",
+  "Gulo gulo" = "Wolverine",
+  "Lynx canadensis" = "Canada lynx",
+  "Neovison vison" = "American mink",
+  "Neogale vison" = "American mink",
+  "Lepus americanus" = "Snowshoe hare",
+  "Spilogale gracilis" = "Western spotted skunk",
+  "Mephitis mephitis" = "Striped skunk",
+  "Canis latrans" = "Coyote",
+  "Neogale frenata" = "Long-tailed weasel",
+  "Mustela frenata" = "Long-tailed weasel",
+  "Mustela nivalis" = "Least weasel",
+  "Mustela erminea" = "Eurasian ermine",
+  "Vulpes vulpes" = "Red fox",
+  "Urocyon cinereoargenteus" = "Gray fox",
+  "Taxidea taxus" = "American badger",
+  "Pekania pennanti" = "Fisher",
+  "Tamiasciurus hudsonicus" = "American red squirrel",
+  "Lontra canadensis" = "North American river otter",
+  "Procyon lotor" = "Raccoon",
+  "Erethizon dorsatum" = "North American porcupine"
+)
+  
+
+incidentals <- incidentals %>%
+  select(Species_common_name, Species_scientific, Date, Year, Age, Sex, Latitude, Longitude, Observer_ID,
+         Type_of_record, Credibility, Start_Deployment_date, End_Deployment_date, Time, Project_name)
+
+## Remove outliers outside of BC coordinate range 
+incidentals <- subset(incidentals, incidentals$Latitude >= 48 & incidentals$Latitude <= 60 )
+incidentals <- subset(incidentals, incidentals$Longitude <= -114 & incidentals$Longitude >= -135)
+
+
+# Save final dataset
+write.csv(incidentals, "Incidental_data_MDB_March2025.csv")
+
+```
+
+
+Plot to check for outliers - there are a bunch in Alberta and outside of BC
+
+```{r}
+#Remove NAs
+incidentals_clean <- incidentals %>%
+  filter(!is.na(Latitude) & !is.na(Longitude))
+
+inci_sf <- incidentals_clean %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326)  # Convert to sf spatial object
+
+# Interactive map with OpenStreetMap
+tmap_mode("view")  # Use "plot" instead for a static map
+tm_basemap("OpenStreetMap") +
+  tm_shape(inci_sf) +
+  tm_dots(col = "red", size = 0.2) +
+  tm_layout(title = "Incidental Detections in British Columbia")
+```
+Clip incidental data to British Columbia Terrestrial Boundary 
+
+```{r}
+# If incidentals is a data frame with lat/lon
+incidentals_sf <- st_as_sf(incidentals_clean, coords = c("Longitude", "Latitude"), crs = 4326)
+
+# Load BC boundary shapefile
+bc_boundary <- st_read("C:/LocalR/Merge_datacollation_2025/GIS/BC_Boundary.shp")
+
+# Transform incidentals to BC boundary CRS if they differ
+if (st_crs(incidentals_sf) != st_crs(bc_boundary)) {
+  incidentals_sf <- st_transform(incidentals_sf, st_crs(bc_boundary))
+}
+st_agr(incidentals_sf) <- "identity"
+
+# Transform to a projected CRS 
+incidentals_sf <- st_transform(incidentals_sf, crs = 4326)
+bc_boundary <- st_transform(bc_boundary, crs = 4326)
+
+incidentals_clipped <- st_intersection(incidentals_sf, bc_boundary)
+incidentals_clipped_df <- as.data.frame(st_drop_geometry(incidentals_clipped))
+
+write.csv(incidentals_clipped_df, file="test_clipped_incidentals.csv")
+
+```
+
+For some reason, this clip is super slow. May need to have chosen a different boundary polygon and not line shp.
+
+```{r}
+# Set working directory
+setwd("C:/LocalR/Merge_datacollation_2025/Input_incidental_sheets")
+incidentals_clip <- read.csv(file="Incidentals_March2025_clip.csv", header=T)
+```
+
