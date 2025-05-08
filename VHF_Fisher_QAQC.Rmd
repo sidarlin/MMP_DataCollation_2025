@@ -1,0 +1,1772 @@
+---
+title: "Fisher_VHF_QAQC"
+output: html_document
+date: "2025-04-24"
+By Siobhan Darlington
+---
+
+The objectives of this script are to:
+
+1) Compile and clean VHF triangulated fisher data for the Columbia population in one dataframe, incorporating the following data sources: File maker files (8 total), BC Wild ground telemetry, BC Wild Aerial telemetry, Live captures, Trapper data, Den tree data, Clappia habitat data, and Aerial data from 2023. 
+2) Verify a subset of triangulated bearings to check for erroneous fixes.
+3) Clean and finalize a complete VHF dataset
+4) Create KDE home ranges for fisher with sufficient data, mapping their VHF locations and HRs, and den tree locations. 
+
+ Code chunk directory:
+ 
+ 1. Load libraries
+ 2. Combine filemaker locations, remove duplicates and keep element locations over triangulated ones
+ 3. Alternatively, work with Rich's compiled filemaker data and retain UTMs and error_area whenever possible. I recommend adding the lat/longs from step 2. to this sheet due to location errors present. 
+4. Check the filemaker compiled bearings and flag potential errors
+5. Get UTMs and Flag distances that are too far apart and map
+6. Map triangulated locations vs. the bearings 
+7. Upload Live capture, trapping, and Aerial 2023 sheet Rich compiled
+8. Upload ground telemetry from BC Wild and standardize the column names
+9. Extract BC wild ground telemetry bearings from string
+10. Overwrite UTMs with conversion from correct Lat/Longs, Remove Precision = "discard"
+11. Map flagged bearings in BC wild
+12. Upload ground telemetry from Clappia 
+13. Upload BC Wild Aerial telemetry and standardize column names
+14. Combine all datasets, extract the following columns:
+15. Add Shannon's denning data by column bind, and by row bind for new data
+16. Fix UTMs for all data, Remove additional duplicates by individual, datetime, and location
+17. Precision category cleaning, removing outliers and deletemes
+18. Check sample sizes by Fisher_ID and Radiolocation_type, export
+19. Map the data to look for any outliers visually
+20. Run a prelim AKDE on the fisher locations and map with the den trees in red, export html map
+21. Export final data and home range shapefiles
+
+1. Load libraries
+```{r}
+library(dplyr)
+library(geosphere)
+library(lubridate)
+library(leaflet)
+library(sf)
+library(htmlwidgets)
+library(purrr)
+library(RColorBrewer)
+library(tibble)
+library(tidyr)
+library(jsonlite)
+library(stringr)
+library(leaflet)
+library(viridis)
+```
+
+2. Combine filemaker locations, remove duplicates and keep element locations over triangulated ones
+
+```{r}
+
+getwd()
+
+badger1.n <- read.csv(file="Input_VHF_data_sheets/Ground telemetry File maker Badger1 new-2023.csv")
+badger1.o <- read.csv(file="Input_VHF_data_sheets/Ground telemetry File maker Badger1 old-2023.csv")
+fisher1.n <- read.csv(file="Input_VHF_data_sheets/Ground telemetry File maker Fisher1 new-2023.csv")
+fisher1.o <- read.csv(file="Input_VHF_data_sheets/Ground telemetry File maker Fisher1 old-2023.csv")
+fisher2 <- read.csv(file="Input_VHF_data_sheets/Ground telemetry File maker Fisher2-2023.csv")
+rf <- read.csv(file="Input_VHF_data_sheets/Ground telemetry File maker RF-2023.csv")
+rw.o <- read.csv(file="Input_VHF_data_sheets/Ground telemetry File maker RW old-2023.csv")
+rw.n <- read.csv(file="Input_VHF_data_sheets/Ground telemetry File maker RW new-2023.csv")
+
+### For all of these above sheets, I took Autocoord_temp and made it three columns "Latitude, Longitude, Error_GPS"
+## Note that other field exist such as Autocoord_temp.2 and Autocoord_saved
+## I also corrected Errror_area to Error_area because it was annoying me. 
+
+badger1.n$Data_source <- "badger1_newtemp"
+fisher1.n$Data_source <- "fisher1_newtemp"
+badger1.o$Data_source <- "badger1_oldtemp"
+fisher1.o$Data_source <- "fisher1_oldtemp"
+fisher2$Data_source <- "fisher2_oldtemp"
+rf$Data_source <- "RF_newtemp"
+rw.o$Data_source <- "RW_oldtemp"
+rw.n$Data_source <- "RW_newtemp"
+
+## add missing columns to fisher2 and rf
+fisher2$Mark_for_deletion <- ""
+fisher2$FPP_completed <- ""
+fisher2$Selected_for_FPP <- ""
+fisher2$PCP_completed <- ""
+
+fisher1.o$Mark_for_deletion <- ""
+fisher1.o$FPP_completed <- ""
+fisher1.o$Selected_for_FPP <- ""
+fisher1.o$PCP_completed <- ""
+
+badger1.o$Mark_for_deletion <- ""
+badger1.o$FPP_completed <- ""
+badger1.o$Selected_for_FPP <- ""
+badger1.o$PCP_completed <- ""
+
+rw.o$Mark_for_deletion <- ""
+rw.o$FPP_completed <- ""
+rw.o$Selected_for_FPP <- ""
+rw.o$PCP_completed <- ""
+
+rf$Mark_for_deletion <- ""
+rf$FPP_completed <- ""
+rf$Selected_for_FPP <- ""
+rf$PCP_completed <- ""
+
+setdiff(names(badger1.o), names(rw.n))  # Columns in badger1.o but not in badger1.n
+setdiff(names(rw.n), names(fisher2))  # Columns in badger1.n but not in badger1.o
+
+
+fm_data <- rbind(badger1.n, badger1.o, fisher1.n, fisher1.o, fisher2, rf, rw.o , rw.n)
+
+## Convert the "Best_UTM_easting" and "Best_UTM_northing" and put the values in "Actual_latitude" and "Actual_longitude"
+
+# Make a copy to preserve original
+# fm_data_with_coords <- fm_data %>%
+#   filter(!is.na(Best_UTM_easting) & !is.na(Best_UTM_northing))
+# 
+# # Convert to sf using UTM zone 10N (EPSG:32701)
+# fm_data_sf <- st_as_sf(fm_data_with_coords, coords = c("Best_UTM_easting", "Best_UTM_northing"), crs = 332710, remove = FALSE)
+# 
+# # Transform to WGS84 (EPSG:4327)
+# fm_data_sf <- st_transform(fm_data_sf, crs = 4327)
+# 
+# # Extract decimal degrees into separate columns
+# coords <- st_coordinates(fm_data_sf)
+# 
+#  #Create a logical index for rows with valid UTM coordinates
+# valid_utm <- !is.na(fm_data$Best_UTM_easting) & !is.na(fm_data$Best_UTM_northing)
+# 
+# # Create a logical index for where Actual_longitude is NA (within the subset)
+# needs_update <- is.na(fm_data$Actual_longitude[valid_utm])
+# 
+# # Update only those rows in the original data
+# fm_data$Actual_longitude[valid_utm][needs_update] <- coords[needs_update, "X"]
+# fm_data$Actual_latitude[valid_utm][needs_update] <- coords[needs_update, "Y"]
+
+### Replace latitude and longitude if Actual_latitude and Actual_longitude are present
+
+# Replace Latitude with Actual_latitude where not NA
+fm_data$Latitude[!is.na(fm_data$Actual_latitude)] <- fm_data$Actual_latitude[!is.na(fm_data$Actual_latitude)]
+
+# Replace Longitude with Actual_longitude where not NA
+fm_data$Longitude[!is.na(fm_data$Actual_longitude)] <- fm_data$Actual_longitude[!is.na(fm_data$Actual_longitude)]
+
+## Create a UTM_Easting and UTM_Northing column from the new Latitude and Longitude columns under UTM 11
+# Step 1: Identify rows with valid coordinates
+valid_coords <- !is.na(fm_data$Latitude) & !is.na(fm_data$Longitude)
+
+# Step 2: Create a temporary sf object for valid rows, using UTM Zone 10N (EPSG:32710)
+fm_data_utm <- fm_data[valid_coords, ] %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4327, remove = FALSE) %>%
+  st_transform(crs = 32710)  # ← UTM Zone 10N
+
+# Step 3: Extract UTM coordinates
+utm_coords <- st_coordinates(fm_data_utm)
+
+# Step 4: Create new columns and insert UTM values
+fm_data$UTM_Easting <- NA_real_
+fm_data$UTM_Northing <- NA_real_
+
+fm_data$UTM_Easting[valid_coords] <- utm_coords[, 1]
+fm_data$UTM_Northing[valid_coords] <- utm_coords[, 2]
+
+## now, let's remove duplicates using CreationTimestamp, Fisher_ID, Latitude and Longitude while keeping the Radiolocation_type marked as "Element"
+
+# Remove duplicates with preference for 'Element' in Radiolocation_type
+fm_data_cleaned <- fm_data %>%
+  # Arrange to prioritize 'Element' entries
+  arrange(Fisher_ID, CreationTimestamp, 
+          desc(Radiolocation_type == "Element")) %>%
+  # Remove duplicates based on specified columns
+  distinct(Fisher_ID, CreationTimestamp, .keep_all = TRUE)
+
+## Make a new precision column, replace NA values in Precision_category with Home Range level precision (4 or 5)
+
+fm_data_cleaned <- fm_data_cleaned %>%
+  mutate(Precision_adjusted = if_else(is.na(Precision_category) | Precision_category == "", 
+                                      "4", 
+                                      as.character(Precision_category)))
+
+
+write.csv(fm_data_cleaned, file="Ground_Telemetry_cleaned_Filemaker_May22025.csv")
+```
+
+3. Alternatively, work with Rich's compiled filemaker data and retain UTMs and error_area whenever possible. I recommend adding the lat/longs from step 2. to this sheet due to location errors present. 
+
+```{r}
+
+fm_compile <- read.csv(file="Input_VHF_data_sheets/FULL_compiled_240521_locations_exported.csv", header=T)
+
+fm_compile1 <- fm_compile %>% 
+  mutate(UTM_easting = if_else(!is.na(Best_UTM_easting),Best_UTM_easting,
+                               if_else(!is.na(Actual_UTM_easting), Actual_UTM_easting,
+                                       if_else(!is.na(Flagging_UTM_easting), Flagging_UTM_easting,
+                                               Triang_easting))),
+         UTM_northing = if_else(!is.na(Best_UTM_northing),Best_UTM_northing,
+                               if_else(!is.na(Actual_UTM_northing), Actual_UTM_northing,
+                                       if_else(!is.na(Flagging_UTM_northing), Flagging_UTM_northing,
+                                               Triang_northing))))
+
+
+## Ok now need to fill in the UTM gaps  - I think we can pull from dataframe above.
+
+# Step 1: Join only the needed columns
+fm_compile1 <- fm_compile1 %>%
+  left_join(fm_data_cleaned %>%
+             dplyr::select(Location_UUID, UTM_Easting, UTM_Northing, Data_source),
+            by = "Location_UUID")
+
+# Step 2: Fill in NA values in UTM_easting/northing from the new columns
+fm_compile1 <- fm_compile1 %>%
+  mutate(
+    UTM_easting = if_else(is.na(UTM_easting), UTM_Easting, UTM_easting),
+    UTM_northing = if_else(is.na(UTM_northing), UTM_Northing, UTM_northing)
+  )
+
+## Make new precision category as above
+
+fm_compile1 <- fm_compile1 %>%
+  mutate(Precision_adjusted = if_else(is.na(Precision_category) | Precision_category == "", 
+                                      "4", 
+                                      as.character(Precision_category)))
+
+## Remove duplicates as above noting that RW already removed many duplicates but just to check
+
+# Remove duplicates with preference for 'Element' in Radiolocation_type
+fm_compile1 <- fm_compile1 %>%
+  # Arrange to prioritize 'Element' entries
+  arrange(Fisher_ID, CreationTimestamp, 
+          desc(Radiolocation_type == "Element")) %>%
+  # Remove duplicates based on specified columns
+  distinct(Fisher_ID, CreationTimestamp, .keep_all = TRUE) ## removed 1 obs
+
+fm_compile1<- fm_compile1 %>%
+  rename(
+    Error_area = Error_area,
+    Error_easting = Triang_easting,
+    Error_northing = Triang_northing
+  )
+
+## Add Latitude and Longitude to this dataframe from UTM_easting and UTM_northing
+# Convert fm_compile1 to an sf object using UTM Zone 10N (EPSG:32610)
+fm_compile1_sf <- fm_compile1 %>%
+  st_as_sf(coords = c("UTM_easting", "UTM_northing"), crs = 32610)
+
+# Transform to WGS84 (EPSG:4326) to get lat/lon
+fm_compile1_latlon <- fm_compile1_sf %>%
+  st_transform(crs = 4326)
+
+# Extract the lat/lon coordinates back into columns
+fm_compile1 <- fm_compile1_latlon %>%
+  mutate(
+    Longitude = st_coordinates(.)[, 1],
+    Latitude = st_coordinates(.)[, 2]
+  ) %>%
+  st_drop_geometry() 
+
+table(fm_compile1$Precision_adjusted)
+
+fm_compile1 <- subset(fm_compile1, fm_compile1$Precision_adjusted!="discard")
+
+write.csv(fm_compile1, file="FM_Compile_RW_SD_May2025.csv")
+#fm_compile1 <- read.csv(file="Input_VHF_data_sheets/FM_Compile_RW_SD_May2025.csv", header=T)
+```
+
+
+4. Check the filemaker compiled bearings and flag potential errors
+```{r}
+##Loading a file of bearing from Rory to check the quality of the data, the bearings from FM are all in separate sheets...
+
+rf_bearings <- read.csv(file="Input_VHF_data_sheets/RF_Bearings_Filemaker_Oct2023.csv", header=T)
+
+## Replace missing coordinates for lat/long
+
+# Create an sf object from UTM coordinates (Zone 10N, EPSG:32610)
+utm_sf <- rf_bearings %>%
+  filter(is.na(Bearing_latitude) | is.na(Bearing_longitude)) %>%
+  st_as_sf(coords = c("UTM_easting", "UTM_northing"), crs = 32610, remove = FALSE)
+
+# Transform to WGS84 (lat/lon)
+wgs84_sf <- st_transform(utm_sf, crs = 4326)
+
+# Extract the lat/lon values and update only the NA rows in the original dataframe
+rf_bearings <- rf_bearings %>%
+  mutate(
+    Bearing_longitude = ifelse(is.na(Bearing_longitude),
+                                st_coordinates(wgs84_sf)[, 1], 
+                                Bearing_longitude),
+    Bearing_latitude = ifelse(is.na(Bearing_latitude),
+                               st_coordinates(wgs84_sf)[, 2], 
+                               Bearing_latitude)
+  )
+
+## I need to attach the bearing data to the file maker data to obtain the triangulated values for flagging
+
+# Step 1: Assign bearing numbers within each Location_UUID
+rf_bearings_numbered <- rf_bearings %>%
+  group_by(Location_UUID) %>%
+  mutate(Bearing_number = row_number()) %>%
+  ungroup()
+
+# Step 2: Pivot wider to one row per Location_UUID
+rf_bearings_wide <- rf_bearings_numbered %>%
+  dplyr::select(Location_UUID, Bearing_number, Bearing, Bearing_latitude, Bearing_longitude) %>%
+  pivot_wider(
+    names_from = Bearing_number,
+    values_from = c(Bearing, Bearing_latitude, Bearing_longitude),
+    names_glue = "Bearing{Bearing_number}_{.value}"
+  ) %>%
+ rename_with(~ gsub("_Bearing$", "", .x)) %>%  # Change BearingN_Bearing -> BearingN
+  rename_with(~ gsub("_Bearing_latitude$", "_latitude", .x)) %>%  # Change BearingN_Bearing_latitude -> BearingN_latitude
+  rename_with(~ gsub("_Bearing_longitude$", "_longitude", .x))  
+
+
+# Step 3: Join to fm_compile1
+fm_compile1_joined <- fm_compile1 %>%
+  left_join(rf_bearings_wide, by = "Location_UUID")
+```
+
+
+5. Get UTMs and Flag distances that are too far apart and map
+
+```{r}
+# Function to convert lat/long to UTM (Zone 10)
+convert_to_utm <- function(lat, long, zone = 10) {
+  if (is.na(lat) || is.na(long)) return(data.frame(Easting = NA, Northing = NA))
+  
+  point <- st_sfc(st_point(c(as.numeric(long), as.numeric(lat))), crs = 4326)
+  point_utm <- st_transform(point, crs = paste0("+proj=utm +zone=", zone, " +datum=WGS84 +units=m +no_defs"))
+  coords <- st_coordinates(point_utm)
+  data.frame(Easting = coords[1], Northing = coords[2])
+}
+
+# Loop to convert bearing coordinates to UTM and calculate distance
+for (i in 1:9) {
+  lat_col <- paste0("Bearing", i, "_latitude")
+  long_col <- paste0("Bearing", i, "_longitude")
+  
+  utm_e_col <- paste0("Bearing", i, "_easting")
+  utm_n_col <- paste0("Bearing", i, "_northing")
+  dist_col <- paste0("Bearing", i, "_distance_m")
+  
+  utm_coords <- mapply(convert_to_utm, fm_compile1_joined[[lat_col]], fm_compile1_joined[[long_col]], SIMPLIFY = FALSE)
+  utm_df <- do.call(rbind, utm_coords)
+  
+  fm_compile1_joined[[utm_e_col]] <- utm_df$Easting
+  fm_compile1_joined[[utm_n_col]] <- utm_df$Northing
+  
+  # Compute Euclidean distance from triangulated UTM (using correct UTM_Easting / UTM_Northing)
+  fm_compile1_joined[[dist_col]] <- with(fm_compile1_joined, ifelse(
+    is.na(utm_df$Easting) | is.na(UTM_Easting), NA,
+    sqrt((utm_df$Easting - UTM_Easting)^2 + (utm_df$Northing - UTM_Northing)^2)
+  ))
+}
+
+# Add flag if any distance exceeds 3000m
+fm_compile1_joined <- fm_compile1_joined %>%
+  mutate(
+    Bearing_flagged_3km = if_else(
+      pmax(
+        Bearing1_distance_m,
+        Bearing2_distance_m,
+        Bearing3_distance_m,
+        Bearing4_distance_m,
+        Bearing5_distance_m,
+        Bearing6_distance_m,
+        Bearing7_distance_m,
+        Bearing8_distance_m,
+        Bearing9_distance_m,
+        na.rm = TRUE
+      ) > 3000,
+      "flag",
+      NA_character_
+    )
+  )
+
+# Add which specific bearings are >3000m
+fm_compile1_joined <- fm_compile1_joined %>%
+  mutate(
+    Flagged_bearing_3km = pmap_chr(
+      list(Bearing1_distance_m,
+           Bearing2_distance_m,
+           Bearing3_distance_m,
+           Bearing4_distance_m,
+           Bearing5_distance_m,
+           Bearing6_distance_m,
+           Bearing7_distance_m,
+           Bearing8_distance_m,
+           Bearing9_distance_m),
+      function(d1, d2, d3, d4, d5, d6, d7, d8, d9) {
+        bearings <- c()
+        if (!is.na(d1) && d1 > 3000) bearings <- c(bearings, "Bearing1")
+        if (!is.na(d2) && d2 > 3000) bearings <- c(bearings, "Bearing2")
+        if (!is.na(d3) && d3 > 3000) bearings <- c(bearings, "Bearing3")
+        if (!is.na(d4) && d4 > 3000) bearings <- c(bearings, "Bearing4")
+        if (!is.na(d5) && d5 > 3000) bearings <- c(bearings, "Bearing5")
+        if (!is.na(d6) && d6 > 3000) bearings <- c(bearings, "Bearing6")
+        if (!is.na(d7) && d7 > 3000) bearings <- c(bearings, "Bearing7")
+        if (!is.na(d8) && d8 > 3000) bearings <- c(bearings, "Bearing8")
+        if (!is.na(d9) && d9 > 3000) bearings <- c(bearings, "Bearing9")
+        if (length(bearings) == 0) NA_character_ else paste(bearings, collapse = ", ")
+      }
+    )
+  )
+
+
+```
+
+
+6. Map triangulated locations vs. the bearings 
+
+```{r}
+# Add a row ID and bearing flag column
+fm_compile1_joined <- fm_compile1_joined %>%
+  mutate(row_id = row_number(),
+         Bearing_flagged = ifelse(is.na(Bearing_flagged_3km), "none", Bearing_flagged_3km))
+
+# Ensure coordinates are numeric
+fm_compile1_joined <- fm_compile1_joined %>%
+  mutate(
+    Latitude = as.numeric(Latitude),
+    Longitude = as.numeric(Longitude),
+    across(matches("Bearing[1-9]_(latitude|longitude|bearing)"), as.numeric)
+  )
+
+# Filter rows with at least one valid bearing coordinate
+fm_compile1_filtered <- fm_compile1_joined %>%
+  filter(
+    rowSums(
+      across(matches("Bearing[1-9]_(latitude|longitude)"), ~ !is.na(.))
+    ) > 0
+  )
+
+# Create Fisher_ID color palette
+fisher_ids <- unique(fm_compile1_filtered$Fisher_ID)
+viridis_colors <- c(
+  "#440154", "#482878", "#3E4A89", "#31688E", "#26828E", "#1F9E89",
+  "#35B779", "#6DCD59", "#B4DE2C", "#FDE725", "#F9F9F9"
+)
+fisher_palette <- colorFactor(palette = viridis_colors, domain = fisher_ids)
+
+# Build map
+map <- leaflet() %>%
+  addProviderTiles("OpenStreetMap") %>%
+
+  # Triangulated (non-flagged)
+  addCircleMarkers(
+    data = fm_compile1_filtered %>% filter(Bearing_flagged != "flag"),
+    lng = ~Longitude, lat = ~Latitude,
+    color = ~fisher_palette(Fisher_ID),
+    radius = 5,
+    popup = ~paste("RowID:", row_id,
+                   "<br>Fisher_ID:", Fisher_ID,
+                   "<br>Triangulated:", Latitude, ",", Longitude),
+    group = "Triangulated (By Fisher_ID)"
+  ) %>%
+
+  # Flagged triangulated
+  addCircleMarkers(
+    data = fm_compile1_filtered %>% filter(Bearing_flagged == "flag"),
+    lng = ~Longitude, lat = ~Latitude,
+    color = "red",
+    radius = 5,
+    popup = ~paste("RowID:", row_id,
+                   "<br>Fisher_ID:", Fisher_ID,
+                   "<br>FLAGGED:", Latitude, ",", Longitude),
+    group = "Flagged (Red)"
+  )
+
+for (i in 1:9) {
+  lat_col <- paste0("Bearing", i, "_latitude")
+  lon_col <- paste0("Bearing", i, "_longitude")
+  bearing_col <- paste0("Bearing", i)  # <- changed this line
+
+  # Flagged bearings
+  flagged_bearings <- fm_compile1_filtered %>%
+    filter(Bearing_flagged == "flag", !is.na(.data[[lat_col]]) & !is.na(.data[[lon_col]])) %>%
+    mutate(lat = .data[[lat_col]], lon = .data[[lon_col]], bearing_val = .data[[bearing_col]])
+
+  map <- map %>%
+    addCircleMarkers(
+      data = flagged_bearings,
+      lng = ~lon, lat = ~lat,
+      color = "gray",
+      radius = 5,
+      popup = ~paste0("RowID: ", row_id,
+                      "<br>Fisher_ID: ", Fisher_ID,
+                      "<br>FLAGGED Bearing", i,
+                      "<br>Location: ", round(lat, 5), ", ", round(lon, 5),
+                      "<br>Bearing: ", bearing_val),
+      group = "Flagged Bearings (Gray)"
+    )
+
+  # Regular bearings
+  regular_bearings <- fm_compile1_filtered %>%
+    filter(Bearing_flagged != "flag", !is.na(.data[[lat_col]]) & !is.na(.data[[lon_col]])) %>%
+    mutate(lat = .data[[lat_col]], lon = .data[[lon_col]], bearing_val = .data[[bearing_col]])
+
+  map <- map %>%
+    addCircleMarkers(
+      data = regular_bearings,
+      lng = ~lon, lat = ~lat,
+      color = "black",
+      radius = 5,
+      popup = ~paste0("RowID: ", row_id,
+                      "<br>Fisher_ID: ", Fisher_ID,
+                      "<br>Bearing", i,
+                      "<br>Location: ", round(lat, 5), ", ", round(lon, 5),
+                      "<br>Bearing: ", bearing_val),
+      group = "Bearings (Black)"
+    )
+}
+
+# Add legend and controls
+map <- map %>%
+  addLegend(
+    position = "bottomright",
+    pal = fisher_palette,
+    values = fm_compile1_filtered$Fisher_ID,
+    title = "Fisher_ID",
+    opacity = 2
+  ) %>%
+  addLayersControl(
+    overlayGroups = c("Triangulated (By Fisher_ID)", "Flagged (Red)", "Bearings (Black)", "Flagged Bearings (Gray)"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+# Show map
+map
+
+# Save map as HTML
+saveWidget(map, "fm_compile1_map_with_rowid.html", selfcontained = TRUE)
+
+# Drop list-type columns
+fm_compile1_flat <- fm_compile1_joined %>%
+ dplyr::select(where(~ class(.) != "list"))
+
+
+### Note that there are many bearings showing up at Larry's house and only 2 are coming up a "flagged" when they all should be. # Will remove any "discard" locations and run the map again. 
+
+saveWidget(map, file = "html_maps/Filemaker_bearings_map.html", selfcontained = TRUE)
+
+```
+
+
+7. Upload Live capture, trapping, and Aerial 2023 sheet Rich compiled
+
+```{r}
+aerial_caps <- read.csv(file="Input_VHF_data_sheets/Aerial_Capture_Trap_2023.csv", header=T)
+
+aerial_caps <- aerial_caps %>%
+  rename(Data_source = Source)
+
+aerial_caps$Precision_adjusted <- aerial_caps$Precision_category
+aerial_caps$Error_area <- ""
+aerial_caps$Error_northing <- ""
+aerial_caps$Error_easting <- ""
+
+# Convert to sf object with UTM Zone 10N (EPSG:32610)
+aerial_caps_sf <- st_as_sf(aerial_caps, coords = c("UTM_easting", "UTM_northing"), crs = 32610)
+
+# Transform to WGS84 (EPSG:4326)
+aerial_caps_sf <- st_transform(aerial_caps_sf, crs = 4326)
+
+# Extract coordinates and add them to the original dataframe
+aerial_caps <- aerial_caps %>%
+  bind_cols(
+    st_coordinates(aerial_caps_sf) %>%
+      as.data.frame() %>%
+      rename(Longitude = X, Latitude = Y)
+  )
+
+```
+
+8. Upload ground telemetry from BC Wild and standardize the column names
+
+```{r}
+bcw_ground <- read.csv(file="Input_VHF_data_sheets/Ground telemetry BC Wild-02may2025.csv")
+
+bcw_ground$Radiolocation_type <- ifelse(bcw_ground$element_identified=="yes", "Element", "Triangulation")
+
+# Rename specific columns
+bcw_ground <- bcw_ground %>%
+  rename(
+    Latitude = latitude,
+    Longitude = longitude,
+    Fisher_ID = animal_id,
+    UTM_easting = easting, 
+    UTM_northing = northing,
+    Error_easting = easting_error,
+    Error_northing = northing_error,
+    Error_area = error_area,
+    Date = date,
+    Location_UUID = location_id,
+  )
+
+# Format the datetime to "yyyy-mm-dd HH:mm:ss"
+bcw_ground$Date<- as.Date(bcw_ground$Date, "%Y-%m-%d")
+
+## Add data source
+bcw_ground$Data_source <- "BCWild Ground Telemetry"
+
+## Calculate Precision_category and add Precision_adjusted
+
+bcw_ground <- bcw_ground %>%
+  mutate(
+    Precision_category = case_when(
+      Radiolocation_type == "Element" ~ "0",
+      Error_area == 0 ~ "0",
+      Error_area > 0 & Error_area <= 3000 ~ "1",
+      Error_area > 3000 & Error_area <= 8000 ~ "2",
+      Error_area > 8000 & Error_area <= 30000 ~ "3",
+      Error_area > 30000 & Error_area <= 200000 ~ "4",
+      Error_area > 200000 & Error_area <= 750000 ~ "5",
+      Error_area > 750000 ~ "discard",
+      TRUE ~ NA_character_
+    )
+  )
+
+
+bcw_ground <- bcw_ground %>%
+  mutate(Precision_adjusted = if_else(is.na(Precision_category) | Precision_category == "", 
+                                      "4", 
+                                      as.character(Precision_category)))
+
+
+## Remove duplicates
+
+# Remove duplicates with preference for 'Element' in Radiolocation_type
+bcw_ground_cleaned <- bcw_ground %>%
+  # Arrange to prioritize 'Element' entries
+  arrange(Fisher_ID, Date,
+          desc(Radiolocation_type == "Element")) %>%
+  # Remove duplicates based on specified columns
+  distinct(Fisher_ID, Date, .keep_all = TRUE) ## dropped 2 locations
+
+
+## write the cleaned version
+write.csv(bcw_ground_cleaned, file="BCWild_Ground_cleaned_May22025.csv")
+```
+
+9. Extract BC wild ground telemetry bearings from string
+
+OK now - we are going to extract all of the bearings from BC Wild ground telemetry in the painful string format that they gave us, and convert them to UTMs and measure the distance between these bearings and the projected coordinate to flag problem locations. I will also code this to map bearings in one colour and their triangulated value in another.
+```{r}
+## Extract the bearings from this sheet
+bcw_ground1 <- bcw_ground_cleaned
+
+# Replace "NULL" with an empty string in the triangulation column
+bcw_ground1 <- bcw_ground1 %>%
+  mutate(triangulation = ifelse(triangulation == "NULL", "", triangulation))
+
+# Clean up the triangulation strings by removing escape characters
+bcw_ground1$cleaned_triangulation <- str_replace_all(bcw_ground1$triangulation, "\\\\", "")
+
+# Extract all latitudes and longitudes using regular expressions
+bcw_ground1 <- bcw_ground1 %>%
+  mutate(
+    # Extract longitude and latitude values
+    coordinates = str_extract_all(cleaned_triangulation, '"longitude":([0-9.-]+),"latitude":([0-9.-]+)'),
+    coordinates = lapply(coordinates, function(x) str_extract_all(x, "[0-9.-]+"))
+  )
+
+# View the structure of the coordinates column
+head(bcw_ground1$coordinates, 5)
+
+library(dplyr)
+
+# Define a function to extract longitude and latitude, handling empty lists
+extract_coords <- function(coord_list) {
+  if (length(coord_list) > 0 && length(coord_list[[1]]) == 2) {
+    return(c(longitude = coord_list[[1]][1], latitude = coord_list[[1]][2]))
+  } else {
+    return(c(longitude = NA, latitude = NA))  # Return NA if the list is empty
+  }
+}
+
+# Apply the function to the 'coordinates' column and extract longitude/latitude
+bcw_ground1 <- bcw_ground1 %>%
+  rowwise() %>%
+  mutate(
+    coords = list(extract_coords(coordinates)),
+    Bearing1_long = coords["longitude"],
+    Bearing1_lat = coords["latitude"]
+  ) %>%
+  ungroup()
+
+# View the result
+head(bcw_ground1[, c("Bearing1_lat", "Bearing1_long")], 5)
+
+extract_coordinates <- function(coord_list) {
+  # If no coordinates, return 9 rows of NA
+  if (length(coord_list) == 0) {
+    return(data.frame(
+      Longitude = rep(NA, 9),
+      Latitude = rep(NA, 9)
+    ))
+  }
+  
+  # Extract each coordinate pair, convert to numeric
+  coords <- lapply(coord_list, function(x) as.numeric(x))
+  
+  # Pad with NAs if fewer than 9 points
+  while (length(coords) < 9) {
+    coords[[length(coords) + 1]] <- c(NA, NA)
+  }
+  
+  # Bind and convert to data frame
+  coords_df <- do.call(rbind, coords)
+  colnames(coords_df) <- c("Longitude", "Latitude")
+  return(coords_df)
+}
+
+# Extract coordinates
+coords_list <- lapply(bcw_ground1$coordinates, extract_coordinates)
+
+# Now extract manually from the list into columns
+bcw_ground1$Bearing1_long <- sapply(coords_list, function(x) x[1, "Longitude"])
+bcw_ground1$Bearing1_lat  <- sapply(coords_list, function(x) x[1, "Latitude"])
+
+bcw_ground1$Bearing2_long <- sapply(coords_list, function(x) x[2, "Longitude"])
+bcw_ground1$Bearing2_lat  <- sapply(coords_list, function(x) x[2, "Latitude"])
+
+bcw_ground1$Bearing3_long <- sapply(coords_list, function(x) x[3, "Longitude"])
+bcw_ground1$Bearing3_lat  <- sapply(coords_list, function(x) x[3, "Latitude"])
+
+bcw_ground1$Bearing4_long <- sapply(coords_list, function(x) x[4, "Longitude"])
+bcw_ground1$Bearing4_lat  <- sapply(coords_list, function(x) x[4, "Latitude"])
+
+bcw_ground1$Bearing5_long <- sapply(coords_list, function(x) x[5, "Longitude"])
+bcw_ground1$Bearing5_lat  <- sapply(coords_list, function(x) x[5, "Latitude"])
+
+bcw_ground1$Bearing6_long <- sapply(coords_list, function(x) x[6, "Longitude"])
+bcw_ground1$Bearing6_lat  <- sapply(coords_list, function(x) x[6, "Latitude"])
+
+bcw_ground1$Bearing7_long <- sapply(coords_list, function(x) x[7, "Longitude"])
+bcw_ground1$Bearing7_lat  <- sapply(coords_list, function(x) x[7, "Latitude"])
+
+bcw_ground1$Bearing8_long <- sapply(coords_list, function(x) x[8, "Longitude"])
+bcw_ground1$Bearing8_lat  <- sapply(coords_list, function(x) x[8, "Latitude"])
+
+bcw_ground1$Bearing9_long <- sapply(coords_list, function(x) x[9, "Longitude"])
+bcw_ground1$Bearing9_lat  <- sapply(coords_list, function(x) x[9, "Latitude"])
+
+
+# View the result to check
+head(bcw_ground1[, c("Bearing1_lat", "Bearing1_long", "Bearing2_lat", "Bearing2_long", "Bearing3_lat", "Bearing3_long", "Bearing4_lat", "Bearing4_long")], 5)
+
+### Now create all bearings in UTM to measure the distance from them to the triangulated version and flag any outside of a 3 km radius. 
+
+# Function to convert lat/long to UTM
+convert_to_utm <- function(lat, long, zone = 10) {
+  if (is.na(lat) || is.na(long)) return(data.frame(Easting = NA, Northing = NA))
+  
+  point <- st_sfc(st_point(c(as.numeric(long), as.numeric(lat))), crs = 4326)
+  point_utm <- st_transform(point, crs = paste0("+proj=utm +zone=", zone, " +datum=WGS84 +units=m +no_defs"))
+  coords <- st_coordinates(point_utm)
+  data.frame(Easting = coords[1], Northing = coords[2])
+}
+
+# Loop to convert each bearing to UTM and calculate distance
+for (i in 1:9) {
+  lat_col <- paste0("Bearing", i, "_lat")
+  long_col <- paste0("Bearing", i, "_long")
+  
+  utm_e_col <- paste0("Bearing", i, "_easting")
+  utm_n_col <- paste0("Bearing", i, "_northing")
+  dist_col <- paste0("Bearing", i, "_distance_m")
+  
+  utm_coords <- mapply(convert_to_utm, bcw_ground1[[lat_col]], bcw_ground1[[long_col]], SIMPLIFY = FALSE)
+  utm_df <- do.call(rbind, utm_coords)
+  
+  bcw_ground1[[utm_e_col]] <- utm_df$Easting
+  bcw_ground1[[utm_n_col]] <- utm_df$Northing
+  
+  # Calculate Euclidean distance to triangulated point
+  bcw_ground1[[dist_col]] <- with(bcw_ground1, ifelse(
+    is.na(utm_df$Easting) | is.na(UTM_easting), NA,
+    sqrt((utm_df$Easting - UTM_easting)^2 + (utm_df$Northing - UTM_northing)^2)
+  ))
+}
+
+
+bcw_ground1 <- bcw_ground1 %>%
+  mutate(
+    Bearing_flagged_3km = if_else(
+      pmax(
+        Bearing1_distance_m,
+        Bearing2_distance_m,
+        Bearing3_distance_m,
+        Bearing4_distance_m,
+        Bearing5_distance_m,
+        Bearing6_distance_m,
+        Bearing7_distance_m,
+        Bearing8_distance_m,
+        Bearing9_distance_m,
+        na.rm = TRUE
+      ) > 3000,
+      "flag",
+      NA_character_
+    )
+  )
+
+## Flag which bearings are off
+bcw_ground1 <- bcw_ground1 %>%
+  mutate(
+    Flagged_bearing_3km = pmap_chr(
+      list(Bearing1_distance_m,
+        Bearing2_distance_m,
+        Bearing3_distance_m,
+        Bearing4_distance_m,
+        Bearing5_distance_m,
+        Bearing6_distance_m,
+        Bearing7_distance_m,
+        Bearing8_distance_m,
+        Bearing9_distance_m),
+      function(d1, d2, d3, d4, d5, d6, d7, d8, d9) {
+        bearings <- c()
+        if (!is.na(d1) && d1 > 3000) bearings <- c(bearings, "Bearing1")
+        if (!is.na(d2) && d2 > 3000) bearings <- c(bearings, "Bearing2")
+        if (!is.na(d3) && d3 > 3000) bearings <- c(bearings, "Bearing3")
+        if (!is.na(d4) && d4 > 3000) bearings <- c(bearings, "Bearing4")
+        if (!is.na(d5) && d5 > 3000) bearings <- c(bearings, "Bearing5")
+        if (!is.na(d6) && d6 > 3000) bearings <- c(bearings, "Bearing6")
+        if (!is.na(d7) && d7 > 3000) bearings <- c(bearings, "Bearing7")
+        if (!is.na(d8) && d8 > 3000) bearings <- c(bearings, "Bearing8")
+        if (!is.na(d9) && d9 > 3000) bearings <- c(bearings, "Bearing9")
+        if (length(bearings) == 0) NA_character_ else paste(bearings, collapse = ", ")
+      }
+    )
+  )
+
+## that gets us a list of possibly incorrect bearings, or at least shows where the triangulated value doesn't line up with bearings.
+
+
+## Extract the bearings too:
+# Extract all bearing values (as character) using regex
+bcw_ground1 <- bcw_ground1 %>%
+  mutate(
+    # Extract all matches of "bearing":"XXX" and pull out the value
+    bearing_values = str_extract_all(cleaned_triangulation, '"bearing":"([0-9.]+)"'),
+    bearing_values = lapply(bearing_values, function(x) as.numeric(str_extract(x, "[0-9.]+")))
+  )
+
+# Function to extract up to 9 bearing values (pad with NA)
+extract_bearings <- function(bearing_list) {
+  if (length(bearing_list) == 0) {
+    return(rep(NA, 9))
+  }
+  # Pad to length 9
+  while (length(bearing_list) < 9) {
+    bearing_list <- c(bearing_list, NA)
+  }
+  return(bearing_list[1:9])
+}
+
+# Apply the function to get a 9-column matrix
+bearing_matrix <- t(sapply(bcw_ground1$bearing_values, extract_bearings))
+
+# Assign to columns: Bearing1_bearing through Bearing9_bearing
+for (i in 1:9) {
+  bcw_ground1[[paste0("Bearing", i, "_bearing")]] <- bearing_matrix[, i]
+}
+
+```
+
+10. Overwrite UTMs with conversion from correct Lat/Longs, Remove Precision = "discard"
+
+It looks to me like the lat/longs and UTMs are not direct conversions of each other, I'm going to flag UTMs that don't align with the lat/longs in the datasheet. This is because the previous exercise shows me that the bearings for several flagged locations look to be correct - and the map is based on decimal degrees and flags are based on UTMs. 
+```{r}
+#### it looks to me like some of the UTM values aren't the same as the decimal degrees values in this file? 
+
+# Convert to sf object using WGS84 (EPSG:4326)
+bcw_ground1_sf <- st_as_sf(
+  bcw_ground1,
+  coords = c("Longitude", "Latitude"),
+  crs = 4326,
+  remove = FALSE
+)
+
+# Transform to UTM Zone 10N (EPSG:32610)
+bcw_ground1_utm <- st_transform(bcw_ground1_sf, crs = 32610)
+
+# Extract UTM coordinates
+utm_coords <- st_coordinates(bcw_ground1_utm)
+bcw_ground1$UTME_long <- utm_coords[, "X"]
+bcw_ground1$UTMN_lat <- utm_coords[, "Y"]
+
+# Compare with existing UTM columns and flag discrepancies
+bcw_ground1 <- bcw_ground1 %>%
+  mutate(
+    Flag_UTMs = ifelse(
+      round(UTME_long) != round(UTM_easting) | round(UTMN_lat) != round(UTM_northing),
+      "flag",
+      NA
+    )
+  )
+
+## This produced 1 flagged UTM coordinate
+
+## Let's also get rid of the Precision_adjusted =="discard"
+
+bcw_ground1 <- subset(bcw_ground1, bcw_ground1$Precision_adjusted !="discard")
+
+### There are some errors with denning females
+### It looks like 2 F04 entries from Shannon are incorrect, their coordinates are central to F06 territory. 
+## April 19 2024 and 2024-06-11 both say it's F04 in her den but the locations are wrong. 
+#Date 2024-06-11, -121.6520, 51.66245
+#Date 2024-04-19, -121.6520, 51.67340 # suspicious same longitude as the other point, not sure what's up with these coordinates. will remove for now.
+# Ensure 'Date' column is of Date type
+bcw_ground1 <- bcw_ground1 %>%
+  mutate(Date = as.Date(Date))
+
+# Step 1: Remove the specific row
+bcw_ground1 <- bcw_ground1 %>%
+  filter(!(first_location_id=="F04_24-may-2024" &
+           Fisher_ID == "F04"))
+
+# Step 2: Update Fisher_ID for the specified row
+bcw_ground1 <- bcw_ground1 %>%
+  mutate(Fisher_ID = if_else(
+    first_location_id == "F04_19-apr-2024_element" & Fisher_ID == "F04",
+    "F06",
+    Fisher_ID
+  ))
+
+
+```
+
+11. Map flagged bearings in BC wild
+```{r}
+# Add a row ID column
+bcw_ground1 <- bcw_ground1 %>%
+  mutate(row_id = row_number(),
+         Bearing_flagged = ifelse(is.na(Bearing_flagged_3km), "none", Bearing_flagged_3km))
+
+# Ensure all coordinates are numeric
+bcw_ground1 <- bcw_ground1 %>%
+  mutate(
+    Latitude = as.numeric(Latitude),
+    Longitude = as.numeric(Longitude),
+    across(matches("Bearing[1-9]_(lat|long|bearing)"), as.numeric)
+  )
+
+# Keep rows with at least one valid bearing coordinate
+bcw_ground1_filtered <- bcw_ground1 %>%
+  filter(
+    rowSums(
+      across(matches("Bearing[1-9]_(lat|long)"), ~ !is.na(.))
+    ) > 0
+  )
+
+
+library(RColorBrewer)
+
+# Create color palette for Fisher_IDs
+fisher_ids <- unique(bcw_ground1_filtered$Fisher_ID)
+# Manually define 11 colors based on Viridis palette
+viridis_colors <- c(
+  "#440154", # Dark purple
+  "#482878", # Purple
+  "#3E4A89", # Blue
+  "#31688E", # Blue-green
+  "#26828E", # Turquoise
+  "#1F9E89", # Green
+  "#35B779", # Light green
+  "#6DCD59", # Yellow-green
+  "#B4DE2C", # Yellow
+  "#FDE725", # Light yellow
+  "#F9F9F9"  # Off-white for the last one
+)
+
+# Create a color factor without red
+fisher_palette <- colorFactor(palette = viridis_colors, domain = unique(bcw_ground1_filtered$Fisher_ID))
+
+# Start leaflet map
+map <- leaflet() %>%
+  addProviderTiles("OpenStreetMap") %>%
+ 
+ # Triangulated (non-flagged) points color-coded by Fisher_ID
+addCircleMarkers(
+  data = bcw_ground1_filtered %>% filter(Bearing_flagged != "flag"),
+  lng = ~Longitude, lat = ~Latitude,
+  color = ~fisher_palette(Fisher_ID),
+  radius = 5,
+  popup = ~paste("RowID:", row_id,
+                 "<br>Fisher_ID:", Fisher_ID,
+                 "<br>Triangulated:", Latitude, ",", Longitude),
+  group = "Triangulated (By Fisher_ID)"
+) %>%
+  # # Orange triangulated points
+  # addCircleMarkers(
+  #   data = bcw_ground1_filtered %>% filter(Bearing_flagged != "flag"),
+  #   lng = ~Longitude, lat = ~Latitude,
+  #   color = "orange",
+  #   radius = 5,
+  #   popup = ~paste("RowID:", row_id, "<br>Fisher_ID: ", Fisher_ID, "<br>Triangulated:", Latitude, ",", Longitude),
+  #   group = "Triangulated (Orange)"
+  # ) %>%
+  
+  # Red flagged triangulated points
+  addCircleMarkers(
+    data = bcw_ground1_filtered %>% filter(Bearing_flagged == "flag"),
+    lng = ~Longitude, lat = ~Latitude,
+    color = "red",
+    radius = 5,
+    popup = ~paste("RowID:", row_id, "<br>Fisher_ID: ", Fisher_ID, "<br>FLAGGED:", Latitude, ",", Longitude),
+    group = "Flagged (Red)"
+  )%>%
+  
+  # Add legend for Fisher_ID
+  addLegend(
+    position = "bottomright",
+    pal = fisher_palette,
+    values = bcw_ground1_filtered$Fisher_ID,
+    title = "Fisher_ID",
+    opacity = 1
+  )
+
+# ---------- INSERT THIS UPDATED LOOP HERE ----------
+
+# Loop through bearings 1–9
+for (i in 1:9) {
+  lat_col <- paste0("Bearing", i, "_lat")
+  lon_col <- paste0("Bearing", i, "_long")
+  bearing_col <- paste0("Bearing", i, "_bearing")
+  
+  # Bearings from flagged rows (gray)
+  flagged_bearings <- bcw_ground1_filtered %>%
+    filter(Bearing_flagged == "flag",
+           !is.na(.data[[lat_col]]) & !is.na(.data[[lon_col]])) %>%
+    mutate(
+      lat = .data[[lat_col]],
+      lon = .data[[lon_col]],
+      bearing_val = .data[[bearing_col]]
+    )
+  
+  map <- map %>%
+    addCircleMarkers(
+      data = flagged_bearings,
+      lng = ~lon, lat = ~lat,
+      color = "gray",
+      radius = 5,
+      popup = ~paste0("RowID: ", row_id,
+                      "<br>Fisher_ID: ", Fisher_ID,
+                      "<br>FLAGGED Bearing", i,
+                      "<br>Location: ", round(lat, 5), ", ", round(lon, 5),
+                      "<br>Bearing: ", bearing_val),
+      group = "Flagged Bearings (Gray)"
+    )
+  
+  # Bearings from non-flagged rows (black)
+  regular_bearings <- bcw_ground1_filtered %>%
+    filter(Bearing_flagged != "flag",
+           !is.na(.data[[lat_col]]) & !is.na(.data[[lon_col]])) %>%
+    mutate(
+      lat = .data[[lat_col]],
+      lon = .data[[lon_col]],
+      bearing_val = .data[[bearing_col]]
+    )
+  
+  map <- map %>%
+    addCircleMarkers(
+      data = regular_bearings,
+      lng = ~lon, lat = ~lat,
+      color = "black",
+      radius = 5,
+      popup = ~paste0("RowID: ", row_id,
+                      "<br>Fisher_ID: ", Fisher_ID,
+                      "<br>Bearing", i,
+                      "<br>Location: ", round(lat, 5), ", ", round(lon, 5),
+                      "<br>Bearing: ", bearing_val),
+      group = "Bearings (Black)"
+    )
+
+}
+
+# ---------------------------------------------------
+
+# Add layer controls
+map <- map %>%
+  addLayersControl(
+    overlayGroups = c(
+      "Triangulated (By Fisher_ID)",
+      "Flagged (Red)",
+      "Bearings (Black)",
+      "Flagged Bearings (Gray)"
+    ),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+# Show map
+map
+
+# Save as interactive HTML
+saveWidget(map, "bcw_ground1_map_with_rowid.html", selfcontained = TRUE)
+
+# Drop all list-type columns
+bcw_ground1_flat <- bcw_ground1 %>%
+ dplyr::select(where(~ class(.) != "list"))
+
+# Save to CSV
+write.csv(bcw_ground1_flat, file = "BCWild_ground_bearingsextract.csv", row.names = FALSE)
+
+
+```
+
+
+12. Upload ground telemetry from Clappia - this binds to BC wild data and contains fine-scale habitat data 
+standardize the columns & attach to BC wild ground
+
+```{r}
+clappia <- read.csv(file="Input_VHF_data_sheets/Clappia_Location_downloaded01May2025.csv", header=T)
+
+clappia <- clappia %>%
+  mutate(Date = as.Date(Date, format = "%b %d %Y"))
+
+clappia$Join_ID <- paste0(clappia$Fisher_ID, " ", clappia$Date)
+
+### bring in bcw_ground1 and make a join category
+bcw_ground1$Join_ID <- paste0(bcw_ground1$Fisher_ID, " ", bcw_ground1$Date)
+
+# Filter clappia and join to bcw_ground1
+bcw_ground1 <- bcw_ground1 %>%
+  left_join(
+    clappia %>%dplyr::select(Join_ID, Surveyor, Tree_species, DBH),
+    by = "Join_ID"
+  )
+
+names(bcw_ground1)
+
+## Environmental covariates: "wind", "cloud_cover", "DBH" ,"Tree_species", "ambient_temperature", "Surveyor", "precip"
+
+##Check fm_compile1 names
+names(fm_compile1)
+
+## Environmental covariates: "Temperature", "Surveyor", "Wind", "Precip", "Tree_species", "DBH", "Snow_depth", "Cloud_cover"
+
+## rename the bcw_ground1 names to match
+
+# Rename specific columns
+bcw_ground1 <- bcw_ground1 %>%
+  rename(
+    Wind = wind,
+    Temperature = ambient_temperature,
+    Precip = precip, 
+    Cloud_cover = cloud_cover
+  )
+```
+
+
+13. Upload BC Wild Aerial telemetry and standardize column names
+
+```{r}
+bcw_aerial <- read.csv(file="Input_VHF_data_sheets/Aerial telemetry BC Wild-02may2025.csv")
+
+# Rename specific columns
+bcw_aerial<- bcw_aerial %>%
+  rename(
+    Latitude = latitude,
+    Longitude = longitude,
+    UTM_easting = easting, 
+    UTM_northing = northing,
+    Date= userDateTime,
+    Frequency = frequency,
+    Location_UUID = locationId
+  )
+
+bcw_aerial$Date <- as.Date(bcw_aerial$Date, "%Y-%m-%d")
+
+bcw_aerial$Radiolocation_type <- "Aerial telemetry"
+
+bcw_aerial$Data_source <- "BCWild Aerial Telemetry"
+
+bcw_aerial$Precision_category <- "NA"
+bcw_aerial$Precision_adjusted <- "4" #Home range level
+
+## attach the Fisher IDs by frequency
+freq <- read.csv(file="Fisher_frequency_list.csv")
+
+freq_selected <- freq %>%
+ dplyr::select(Frequency, Fisher_ID)
+
+bcw_aerial_joined <- bcw_aerial %>%
+  left_join(freq_selected, by = "Frequency")
+
+bcw_aerial_joined$Error_area <- ""
+bcw_aerial_joined$Error_northing <- ""
+bcw_aerial_joined$Error_easting <- ""
+
+# Convert the dataframe to an sf object
+bcw_aerial_sf <- st_as_sf(bcw_aerial, coords = c("Longitude", "Latitude"), crs = 4326)
+
+# Define a function to convert Latitude/Longitude to UTM (Zone 10)
+lat_lon_to_utm <- function(lat, lon) {
+  st_point(c(lon, lat)) %>%
+    st_sfc(crs = 4326) %>%
+    st_transform(crs = 32610) %>%
+    st_coordinates() %>%
+    as.vector()
+}
+
+# Apply the function to rows where UTM columns are NA
+bcw_aerial <- bcw_aerial %>%
+  rowwise() %>%
+  mutate(
+    UTM_easting = ifelse(is.na(UTM_easting), lat_lon_to_utm(Latitude, Longitude)[1], UTM_easting),
+    UTM_northing = ifelse(is.na(UTM_northing), lat_lon_to_utm(Latitude, Longitude)[2], UTM_northing)
+  )
+
+```
+
+
+14. Combine all datasets, extract the following columns:
+
+Location_UUID
+Fisher_ID
+Date
+UTM_easting
+UTM_northing
+Latitude
+Longitude
+Radiolocation_type
+Precision_category
+Precision_adjusted
+Error_area
+Error_easting
+Error_northing
+Data_source
+Surveyor
+Den_tree_name
+
+```{r}
+# Define the common columns
+
+# rename filemaker utms
+fm_compile1 <- fm_compile1 %>%
+  rename(
+    UTM_easting=UTM_Easting,
+    UTM_northing = UTM_Northing
+  )
+
+#Add Snow depth to bcw_ground1
+bcw_ground1$Snow_depth = ""
+
+#Check names of the aerial files and add blank columns for environmental variables. 
+names(bcw_aerial_joined)
+bcw_aerial_joined <- bcw_aerial_joined %>%
+  # rename(
+  #   Surveyor = observer ) %>%
+  mutate(Temperature = "",
+  Precip = "",
+  Cloud_cover = "",
+  Wind = "",
+  Tree_species= "",
+  DBH = "",
+  Snow_depth = ""
+         )
+names(aerial_caps)
+aerial_caps <- aerial_caps %>%
+  mutate(Temperature = "",
+  Precip = "",
+  Cloud_cover = "",
+  Wind = "",
+  Tree_species= "",
+  DBH = "",
+  Snow_depth = ""
+         )
+
+common_cols <- c(
+  "Location_UUID",
+  "Fisher_ID",
+  "Date",
+  "UTM_easting",
+  "UTM_northing",
+  "Latitude",
+  "Longitude",
+  "Radiolocation_type",
+  "Precision_adjusted",
+  "Precision_category",
+  "Error_area",
+  "Error_easting",
+  "Error_northing",
+  "Surveyor",
+  "Data_source",
+  "Temperature",
+  "Precip",
+  "Cloud_cover",
+  "Wind",
+  "Tree_species",
+  "DBH",
+  "Snow_depth"
+ )
+
+# List of data frames
+dataframes <- list(fm_compile1, aerial_caps, bcw_ground1, bcw_aerial_joined)
+
+# Convert Precision_adjusted to character and Error_area to numeric for all data frames
+dataframes <- lapply(dataframes, function(df) {
+  df %>%
+    mutate(
+      Precision_adjusted = as.character(Precision_adjusted),
+      Precision_category = as.character(Precision_category),
+      Error_area = as.numeric(Error_area),
+      Error_easting = as.numeric(Error_easting),
+      Error_northing = as.numeric(Error_northing),
+      Temperature = as.character(Temperature),
+      Cloud_cover = as.character(Cloud_cover),
+      Date = as.Date(Date),
+      Wind = as.character(Wind),
+      DBH = as.character(DBH),
+      Snow_depth = as.character(Snow_depth)
+    )
+})
+
+# Assign the updated data frames back to their original names
+fm_compile1 <- dataframes[[1]]
+aerial_caps <- dataframes[[2]]
+bcw_ground1 <- dataframes[[3]]
+bcw_aerial_joined <- dataframes[[4]]
+
+# # Filter to common columns
+fm_compile1_filtered <- fm_compile1 %>% dplyr::select(all_of(common_cols))
+aerial_caps_filtered <- aerial_caps %>% dplyr::select(all_of(common_cols))
+bcw_ground_filtered <- bcw_ground1 %>% dplyr::select(all_of(common_cols))
+bcw_aerial_filtered <- bcw_aerial_joined %>% dplyr::select(all_of(common_cols))
+
+
+# Row bind all datasets
+all_data <- bind_rows(
+  fm_compile1_filtered,
+  aerial_caps_filtered,
+  bcw_ground_filtered,
+  bcw_aerial_filtered
+)
+
+
+
+```
+
+15. Add Shannon's denning data by column bind, and by row bind for new data
+```{r}
+dens <- read.csv("Input_VHF_data_sheets/Enterprise Fisher Den Trees.csv", header=T)
+
+dens$Date <- str_extract(dens$Den_Tree_Name, "\\d{4}-\\d{2}-\\d{2}")
+dens$Date <- as.Date(dens$Date)
+
+all_data$Radiolocation_type <- ifelse(all_data$Radiolocation_type=="Aerial", "Aerial telemetry", all_data$Radiolocation_type)
+
+# Perform the left join and update Tree_species
+# Filter all_data to exclude rows with Radiolocation_type == "Aerial telemetry"
+all_data_filtered <- all_data %>%
+  filter(Radiolocation_type != "Aerial telemetry")
+
+# Perform the left join with dens
+Merged_data <- all_data_filtered%>%
+  left_join(
+    dens %>% dplyr::select(Fisher_ID, Date, Den_Tree_Name, Tree_species),
+    by = c("Fisher_ID", "Date")
+  ) %>%
+  mutate(
+    Tree_species = coalesce(Tree_species.x, Tree_species.y)
+  ) %>%
+  dplyr::select(-Tree_species.x, -Tree_species.y)
+
+# If you want to include the rows with Radiolocation_type == "Aerial telemetry" without joining dens
+# and keep their original Tree_species, you can bind them back
+aerial_data <- all_data %>%
+  filter(Radiolocation_type == "Aerial telemetry")
+
+# Combine the datasets
+all_data1 <- bind_rows(Merged_data, aerial_data)
+
+
+dens1 <- dens %>% filter(Bind =="n")%>%
+  mutate(
+  Surveyor = "Shannon Werden", 
+  Location_UUID ="",
+  Radiolocation_type = "Den tree",
+  Data_source = "Enterprise fisher Den trees",
+  Precision_category = 0,
+  Precision_adjusted = 0,
+  Error_area = "",
+  Error_easting = "",
+  Error_northing = "",
+  Temperature = "",
+  Precip = "",
+  Cloud_cover = "",
+  Wind = "",
+  DBH = "",
+  Snow_depth = ""
+         )
+
+# Step 1: Convert dens1 to an sf object using Latitude and Longitude
+dens1_sf <- st_as_sf(dens1, coords = c("Longitude", "Latitude"), crs = 4326, remove = FALSE)
+
+# Step 2: Transform coordinates to UTM Zone 10N (EPSG:32610)
+dens1_utm <- st_transform(dens1_sf, crs = 32610)
+
+# Step 3: Extract UTM easting and northing
+utm_coords <- st_coordinates(dens1_utm)
+dens1_utm$UTM_easting <- utm_coords[, 1]
+dens1_utm$UTM_northing <- utm_coords[, 2]
+
+# Step 4: Remove geometry column if not needed
+dens1 <- st_drop_geometry(dens1_utm)
+
+dens1 <- dens1 %>% dplyr::select(-Bind)
+
+Merged_data1 <- rbind(all_data1, dens1)
+
+# Make sure all confirmed den trees are marked as Radiolocation_Type "Den tree"
+Merged_data1 <- Merged_data1 %>%
+  mutate(Radiolocation_type = if_else(!is.na(Den_Tree_Name), "Den tree", Radiolocation_type))
+
+vhf_cleaned <- Merged_data1
+```
+
+
+16. Fix UTMs for all data, Remove additional duplicates by individual, datetime, and location
+
+```{r}
+
+ # vhf_cleaned <- read.csv(file="Fisher_VHF_locations_May2025.csv", header=T)
+
+
+### There were missing UTMs in the datasheet so  I have this code to populate from Lat/Long
+# 
+# ## Fix missing UTMs
+# missing_utm <- vhf_cleaned[is.na(vhf_cleaned$UTM_easting) | is.na(vhf_cleaned$UTM_northing), ]
+# # Create an sf object with the missing rows
+# missing_sf <- st_as_sf(missing_utm, coords = c("Longitude", "Latitude"), crs = 4326)
+# 
+# # Transform to UTM Zone 10N (EPSG: 32610)
+# missing_sf_utm <- st_transform(missing_sf, crs = 32610)
+# 
+# # Extract UTM coordinates
+# missing_utm_coords <- st_coordinates(missing_sf_utm)
+# 
+# # Add the UTM coordinates back to the original dataframe
+# vhf_cleaned$UTM_easting[is.na(vhf_cleaned$UTM_easting)] <- missing_utm_coords[, 1]
+# vhf_cleaned$UTM_northing[is.na(vhf_cleaned$UTM_northing)] <- missing_utm_coords[, 2]
+
+## I have since discovered that UTMs assembled in filemaker contain errors and are not aligned with the lat/long values, which appear to be correct. This is important for KDE estimation later, requiring UTMs. 
+## Therefore, I am overwriting UTMs with missing and erroenous values with a conversion from Lat/Long
+
+vhf_cleaned_sf <- st_as_sf(vhf_cleaned, coords = c("Longitude", "Latitude"), crs = 4326)
+
+vhf_cleaned_utm <- st_transform(vhf_cleaned_sf, crs = 32610)
+
+utm_coords <- st_coordinates(vhf_cleaned_utm)
+
+vhf_cleaned$UTM_easting <- utm_coords[, 1]
+vhf_cleaned$UTM_northing <- utm_coords[, 2]
+
+
+## Previous code to remove duplicates based on the Radiolocation_type
+
+# # Remove duplicates with preference for 'Element' in Radiolocation_type
+# vhf_cleaned <- vhf_cleaned %>%
+#   # Arrange to prioritize 'Element' entries
+#   arrange(Fisher_ID, Date,
+#           desc(Radiolocation_type == "Element")) %>%
+#   # Remove duplicates based on specified columns
+#   distinct(Fisher_ID, UTM_northing, UTM_easting, .keep_all = TRUE) ## dropped 2 locations
+
+## or by date and not location in case locations are same spot but off in different rows
+vhf_cleaned <- vhf_cleaned %>%
+  # Arrange to prioritize 'Element' entries
+  arrange(Fisher_ID, Date,
+          desc(Radiolocation_type == "Element")) %>%
+  # Remove duplicates based on specified columns
+  distinct(Fisher_ID, Date, .keep_all = TRUE) ## dropped 41 locations
+```
+
+
+17. Precision category cleaning, removing outliers and deletemes
+
+```{r}
+
+vhf_cleaned <- vhf_cleaned %>%
+  mutate(
+    Latitude = as.numeric(Latitude),
+    Longitude = as.numeric(Longitude),
+    row_id = row_number()
+  )
+## Remove Precision_adjusted= "discard"
+vhf_cleaned <- vhf_cleaned %>%
+  filter(Precision_adjusted != "discard",
+         Fisher_ID !="Deleteme", Fisher_ID!="Deleteme2", Fisher_ID!="", Fisher_ID !="CF12") ## removed 5 more locations
+
+vhf_cleaned <- vhf_cleaned %>%
+  group_by(Fisher_ID) %>%
+  mutate(
+    centroid_lat = mean(Latitude, na.rm = TRUE),
+    centroid_lon = mean(Longitude, na.rm = TRUE),
+    distance_to_centroid = distGeo(cbind(Longitude, Latitude), cbind(centroid_lon, centroid_lat)),
+    z_score = scale(distance_to_centroid)[,1],  # Convert to numeric
+    Flagged = ifelse(abs(z_score) > 3, TRUE, FALSE)  # Flag points >3 SDs away
+  ) %>%
+  ungroup() 
+
+## Remove flagged locations
+vhf_cleaned <- subset(vhf_cleaned, vhf_cleaned$Flagged !="TRUE" | is.na(vhf_cleaned$Flagged)=="TRUE") #dropped 12 locations
+
+```
+
+18. Check sample sizes by Fisher_ID and Radiolocation_type, export
+
+```{r}
+table(vhf_cleaned$Fisher_ID) #517 records
+#F02, FO3, F04, F07, F07, F09 all have 50-72 locations - remove the deleteme records
+
+
+vhf_cleaned <- subset(vhf_cleaned, vhf_cleaned$Fisher_ID !="Deleteme" & vhf_cleaned$Fisher_ID !="Deleteme2" )
+
+## combine Aerial and Aerial telemetry into one category
+
+vhf_cleaned$Radiolocation_type <- ifelse(vhf_cleaned$Radiolocation_type=="Aerial", "Aerial telemetry", vhf_cleaned$Radiolocation_type)
+
+## Fisher_ID by location type
+
+freq_table <- table(vhf_cleaned$Fisher_ID, vhf_cleaned$Radiolocation_type)
+
+write.csv(freq_table, file="Fisher_ID_by_Radiolocation_type.csv")
+```
+
+
+19. Map the data to look for any outliers visually:
+```{r}
+# Ensure Latitude and Longitude are numeric and row_id exists
+vhf_cleaned <- vhf_cleaned %>%
+  mutate(
+    Latitude = as.numeric(Latitude),
+    Longitude = as.numeric(Longitude),
+    row_id = row_number()
+  )
+
+# Create a viridis color palette for Fisher_IDs
+viridis_colors <- c(
+  "#440154", "#482878", "#3E4A89", "#31688E", "#26828E", 
+  "#1F9E89", "#35B779", "#6DCD59", "#B4DE2C", "#FDE725", "#F9F9F9"
+)
+
+fisher_palette <- colorFactor(
+  palette = viridis_colors,
+  domain = unique(vhf_cleaned$Fisher_ID)
+)
+
+# Add a column for circle color
+vhf_cleaned <- vhf_cleaned %>%
+  mutate(
+    circle_color = ifelse(Flagged == TRUE, "red", fisher_palette(Fisher_ID))
+  )
+
+# Create the leaflet map
+vhf_map <- leaflet(vhf_cleaned) %>%
+  addProviderTiles("OpenStreetMap") %>%
+  addCircleMarkers(
+    lng = ~Longitude, lat = ~Latitude,
+    color = ~circle_color,
+    radius = 5,
+    popup = ~paste0(
+      "RowID: ", row_id,
+      "<br>Fisher_ID: ", Fisher_ID,
+      "<br>Radiolocation_type: ", Radiolocation_type,
+      "<br>Precision_adjusted: ", Precision_adjusted
+    ),
+    group = "VHF Locations"
+  ) %>%
+  addLegend(
+    position = "bottomright",
+    pal = fisher_palette,
+    values = ~Fisher_ID,
+    title = "Fisher_ID",
+    opacity = 1
+  ) %>%
+  addLayersControl(
+    overlayGroups = c("VHF Locations"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+# Display the map
+vhf_map
+
+# Optionally save it
+saveWidget(vhf_map, "vhf_cleaned_map.html", selfcontained = TRUE)
+
+
+# Optionally save it
+saveWidget(vhf_map, "vhf_cleaned_map.html", selfcontained = TRUE)
+
+```
+
+
+
+20. Run a prelim AKDE on the fisher locations and map with the den trees in red.
+
+```{r}
+
+# Load and preprocess data
+vhf_cleaned <- read.csv(file = "Fisher_VHF_locations_May2025.csv", header = TRUE)
+
+vhf_cleaned <- vhf_cleaned %>%
+  mutate(
+    Latitude = as.numeric(Latitude),
+    Longitude = as.numeric(Longitude),
+    Date = as.Date(Date)  # Ensure Date is in Date format
+  )
+
+# Identify Fisher_IDs with sufficient data for home range calculation
+vhf_kde_data <- vhf_cleaned %>%
+  filter(!is.na(UTM_easting), !is.na(UTM_northing)) %>%
+  group_by(Fisher_ID) %>%
+  filter(n() >= 15) %>%
+  ungroup()
+
+# Identify Fisher_IDs without sufficient data
+vhf_non_kde_data <- vhf_cleaned %>%
+  filter(!(Fisher_ID %in% unique(vhf_kde_data$Fisher_ID)))
+
+# Convert to sf objects
+vhf_sf <- st_as_sf(vhf_kde_data, coords = c("Longitude", "Latitude"), crs = 4326, remove = FALSE)
+vhf_sf_utm <- st_transform(vhf_sf, crs = 32610)
+
+# Convert to Spatial object for kernelUD
+vhf_sp <- as(vhf_sf_utm, "Spatial")
+row.names(vhf_sp) <- paste0(vhf_sp$Fisher_ID, "_", seq_len(nrow(vhf_sp)))
+
+# Calculate kernel utilization distribution
+kud <- kernelUD(vhf_sp[, "Fisher_ID"], h = "href")
+
+# Extract 95% home range polygons
+hr_95 <- getverticeshr(kud, percent = 95)
+hr_sf <- st_as_sf(hr_95) %>%
+  st_transform(crs = 4326)
+
+# Create color palette
+fisher_ids <- unique(vhf_cleaned$Fisher_ID)
+fisher_palette <- colorFactor(palette = viridis(length(fisher_ids)), domain = fisher_ids)
+
+# Prepare main VHF points
+vhf_sf <- vhf_sf %>%
+  mutate(circle_color = ifelse(Flagged == TRUE, "red", fisher_palette(Fisher_ID)))
+
+# Prepare non-KDE VHF points
+vhf_non_kde_sf <- st_as_sf(vhf_non_kde_data, coords = c("Longitude", "Latitude"), crs = 4326, remove = FALSE) %>%
+  mutate(circle_color = ifelse(Flagged == TRUE, "red", fisher_palette(Fisher_ID)))
+
+# Prepare Den tree points
+den_tree_sf <- vhf_cleaned %>%
+  filter(Radiolocation_type == "Den tree") %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326, remove = FALSE)
+
+# Assign colors to home range polygons
+hr_sf <- hr_sf %>%
+  mutate(color = fisher_palette(id))
+
+# Initialize the leaflet map
+leaflet_map <- leaflet() %>%
+  addProviderTiles("OpenStreetMap") %>%
+  
+  # Add VHF points with home ranges
+  addCircleMarkers(
+    data = vhf_sf,
+    lng = ~Longitude,
+    lat = ~Latitude,
+    color = ~circle_color,
+    radius = 5,
+    popup = ~paste0(
+      "<b>Fisher_ID:</b> ", Fisher_ID,
+      "<br><b>Date:</b> ", Date,
+      "<br><b>Radiolocation_type:</b> ", Radiolocation_type,
+      "<br><b>Precision_adjusted:</b> ", Precision_adjusted,
+      "<br><b>Latitude:</b> ", Latitude,
+      "<br><b>Longitude:</b> ", Longitude
+    ),
+    group = "VHF Locations"
+  ) %>%
+  
+  # Add VHF points without home ranges
+  addCircleMarkers(
+    data = vhf_non_kde_sf,
+    lng = ~Longitude,
+    lat = ~Latitude,
+    color = ~circle_color,
+    radius = 5,
+    popup = ~paste0(
+      "<b>Fisher_ID:</b> ", Fisher_ID,
+      "<br><b>Date:</b> ", Date,
+      "<br><b>Radiolocation_type:</b> ", Radiolocation_type,
+      "<br><b>Precision_adjusted:</b> ", Precision_adjusted,
+      "<br><b>Latitude:</b> ", Latitude,
+      "<br><b>Longitude:</b> ", Longitude
+    ),
+    group = "VHF Locations (No Home Range)"
+  ) %>%
+  
+  # Add Den tree locations in red
+  addCircleMarkers(
+    data = den_tree_sf,
+    lng = ~Longitude,
+    lat = ~Latitude,
+    color = "red",
+    radius = 6,
+    popup = ~paste0(
+      "<b>Fisher_ID:</b> ", Fisher_ID,
+      "<br><b>Date:</b> ", Date,
+      "<br><b>Den_Tree_Name:</b> ", Den_Tree_Name,
+      "<br><b>Precision_adjusted:</b> ", Precision_adjusted,
+      "<br><b>Latitude:</b> ", Latitude,
+      "<br><b>Longitude:</b> ", Longitude
+    ),
+    group = "Den Trees"
+  ) %>%
+  
+  # Add home range polygons
+  addPolygons(
+    data = hr_sf,
+    color = ~color,
+    weight = 2,
+    fillOpacity = 0.3,
+    popup = ~paste0("<b>Fisher_ID:</b> ", id),
+    group = "Home Ranges"
+  ) %>%
+  
+  # Add legend
+  addLegend(
+    position = "bottomright",
+    pal = fisher_palette,
+    values = fisher_ids,
+    title = "Fisher_ID",
+    opacity = 1
+  ) %>%
+  
+  # Add layer controls
+  addLayersControl(
+    overlayGroups = c("VHF Locations", "VHF Locations (No Home Range)", "Den Trees", "Home Ranges"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+# Display the map
+leaflet_map
+
+#Export map to a new folder
+if (!dir.exists("html_maps")) {
+  dir.create("html_maps")
+}
+saveWidget(leaflet_map, file = "html_maps/VHF_cleaned_HR_map.html", selfcontained = TRUE)
+```
+
+
+21. Export final data and home range shapefiles
+
+```{r}
+
+#Export the data
+write.csv(vhf_cleaned, file="Fisher_VHF_locations_May2025.csv")
+
+##Save the shapefiles
+if (!dir.exists("95_KDE_Shapefiles")) {
+  dir.create("95_KDE_Shapefiles")
+}
+st_write(hr_sf, dsn = "95_KDE_Shapefiles/home_ranges_95.shp", delete_layer = TRUE)
+
+```
+
