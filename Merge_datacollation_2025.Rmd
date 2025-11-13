@@ -4,15 +4,41 @@ output: html_document
 date: "2025-03-03"
 Author: Siobhan Darlington 
 ---
+SUMMARY:
 
-The objectives of this script are to clean and collate shiny app academic camera data submissions with government secure and SPI data sources in one workflow, producing two master files: One master file for species detections rarified to 30 minute independent sampling, and one master file for camera locations across all projects. 
+The objectives of this script are:
+1) to clean and collate shiny app academic camera data submissions with government secure and SPI data sources in one workflow, producing two master files: One master file for species detections rarified to 30 minute independent sampling, and one master file for camera locations across all projects. 
+2) clean and collate remaining species observations (DNA, SPI incidental, other incidental, trapper, telemetry) in preparation for species distribution modelling in maxent
 
-I will first test this data on original submissions, but will incorporate cleaned files up to October 2024 and use this script to clean and merge any new data submissions.
+CODE CHUNK DIRECTORY:
 
-Later steps may include integration of DNA and incidental sighting records and basic mapping scripts for species detections by year.
+0. Github directory
+1. Load libraries
+2. Helper function to recode species names throughout
+3. Collate Camera Trap Projects submitted outside of SPI
+4. Create a table with project names and deployment years for metadata file
+5. Load the SPI camera data files and standardize to the same formatting as above
+6. Merge camera data from shiny app projects, SPI, FN and other government secure files 
+7. Rarify all camera species detections to 30 min independent events
+8. Join to project metadata file
+9. Create a basic interactive map of the camera deployments
+10. Create a basic interactive map from the camera species detections
+11. Extract species-specific data observations (cameras) as its own csv file with latitude and longitude associated
+12. Add in the incidental data and the DNA data to the camera species list (with coordinates) and attach the metadata 
+13. Get the project start and end dates for the metadata file
+14. Join the camera and DNA data 
+15. Add incidental data from spi (2023 data with incorrect count until Sultana can get us new extraction)
+16. Load other incidentals clipped to BC Boundary + INaturalist records
+17. Attach incidentals to the Camera/DNA with metadata sheet
+18. Map all species detections
+19. Extract species specific data observations (all) as its own csv file with latitude and longitude associated 
+20. Map a species by data sharing permissions
+21. Make a multi panel occurrence plot by species
+22. Make a summary table of mesocarnivore species detections and export it
+23. Extract summary of specific species records
 
 
-Link to github account
+0. Link to github account
 ```{r}
 # git config --global user.name "sidarlin"
 # git config --global user.email "siobhan.darlington@gov.bc.ca"
@@ -30,52 +56,446 @@ library(ggplot2)
 library(sf)
 library(readr)
 library(farver)
-library(ggplot2)
 library(rmapshaper)
 library(stars)
 library(tidyterra)
 library(dplyr)
 library(rmapshaper)
 library(readxl)
-library(dplyr)
 library(lubridate)
+library(tmap)
+library(viridis)
+library(tmap)
+library(ggmap)
+library(rnaturalearth)
+library(rnaturalearthhires) 
 
 ```
 
-2. Collate Camera Trap Projects submitted outside of SPI
 
-Based on Cindy's cleaned data files, the column names for the camera trap effort data should be:
-Project_name
-Station_ID
-Latitude
-Longitude
-Camera_make
-Camera_model
-Bait_lure
-Camera_comments
-Start_Deployment_date
-End_Deployment_date
-CamProblem_From
-CamProblem_to
-Habitat_type
-Target_feature
-Comments
 
-Species column names should be:
-Station_ID
-Species
-Count
-Date_Time
-Project_name
-Counts
+2. Helper function to recode species names throughout
+```{r}
+# Central recoding vectors
+species_to_scientific <- c(
+  # Marten
+  "marten" = "Martes sp.",
+  "Marten" = "Martes sp.",
+  "Marten sp" = "Martes sp.",
+  "Marten sp " = "Martes sp.",
+  "American Marten" = "Martes americana",
+  "American marten" = "Martes americana",
+  "Pine Marten" = "Martes americana",
+  "Pacific Marten" = "Martes caurina",
+  "Martes americana" = "Martes americana",
+  "Martes caurina" = "Martes caurina",
+  "Martes martes" = "Martes americana",
+ "Pacific marten" = "Martes caurina",
 
+
+  # Mink
+  "American mink" = "Neogale vison",
+  "American Mink" = "Neogale vison",
+  "Mink" = "Neogale vison",
+  "Neogale Vison" = "Neogale vison",
+  "mink" = "Neogale vison",
+  "Neovison vison" = "Neogale vison",
+  "Mustela vision" = "Neogale vison",
+  "Mustela vison" = "Neogale vison",
+
+
+  # Bobcat & Lynx
+  "bobcat" = "Lynx rufus",
+  "Bobcat" = "Lynx rufus",
+  "lynx" = "Lynx canadensis",
+  "Lynx" = "Lynx canadensis",
+  "Lynx canadiensis" = "Lynx canadensis",
+   "Lynx Canadiensis" = "Lynx canadensis",
+  "Canada lynx" = "Lynx canadensis",
+  "Canada Lynx" = "Lynx canadensis",
+  "Lynx canadensis" = "Lynx canadensis",
+  "Lynx rufus" = "Lynx rufus",
+  "Bobcat/Lynx" = "Lynx sp.",
+ "Felis canadensis" = "Lynx canadensis",
+ "Felis lynx canadensis" = "Lynx canadensis",
+
+  # Hare & Rabbit
+  "hare" = "Lepus americanus",
+  "Snowshoe hare" = "Lepus americanus",
+  "Snowshoe Hare" = "Lepus americanus",
+  "Lepus americanus" = "Lepus americanus",
+  "Rabbits and hares" = "Lepus sp.",
+  "Sylvilagus" = "Cottontail rabbit",
+
+  # Wolverine
+  "wolverine" = "Gulo gulo",
+  "Wolverine" = "Gulo gulo",
+  "Gulo gulo luscus" = "Gulo gulo",
+  "Gulo gulo" = "Gulo gulo",
+  "Gulo gulo vancouverensis" = "Gulo gulo",
+  "Gulo gulo luscus" = "Gulo gulo",
+  "Wolverine, Luscus Subspecies" = "Gulo gulo",
+  "Wolverine, Vancouverensis Subspecies" = "Gulo gulo",
+
+  # Skunk
+  "skunk" = "Mephitis mephitis",
+  "Skunk" = "Mephitis mephitis",
+  "striped skunk" = "Mephitis mephitis",
+  "Striped skunk" = "Mephitis mephitis",
+  "Striped Skunk" = "Mephitis mephitis",
+  "Spilogale gracilis" = "Spilogale gracilis",  # Western spotted skunk
+  "Spilogale" = "Spilogale gracilis",  # Western spotted skunk
+  "Western spotted skunk" = "Spilogale gracilis",  # Western spotted skunk
+  "Western Spotted Skunk" = "Spilogale gracilis",  # Western spotted skunk
+
+
+  # Coyote
+  "coyote" = "Canis latrans",
+  "Coyote" = "Canis latrans",
+  "Canis latrans" = "Canis latrans",
+
+  # Weasels
+  "weasel" = "Mustela sp.",
+ "Weasel sp " = "Mustela sp.",
+  "Weasels and Ermine" = "Mustela sp.",
+  "Mustela sp" = "Mustela sp.",
+  "Mustela sp " = "Mustela sp.",
+  "Ermine" = "Mustela richardsonii",
+  "Short-tailed Weasel" = "Mustela richardsonii",
+  "Short-tailed weasel" = "Mustela richardsonii",
+  "Short-Tailed Weasel" = "Mustela richardsonii",
+  "Mustela erminea" = "Mustela richardsonii",
+  "Eurasian ermine" = "Mustela richardsonii",
+  "Long-tailed weasel" = "Neogale frenata",
+  "Long-tailed Weasel" = "Neogale frenata",
+  "Mustela frenata" = "Neogale frenata",
+  "Mustela nivalis" = "Mustela nivalis",  # Least weasel
+  "Mustela frenata altifrontalis" = "Neogale frenata",
+  "Haida ermine" = "Mustela haidarum",
+  "Least weasel" = "Mustela nivalis",
+  "Least Weasel" = "Mustela nivalis",
+
+  # Fox
+  "fox" = "Vulpes vulpes",
+  "red fox" = "Vulpes vulpes",
+  "Red fox" = "Vulpes vulpes",
+  "Red Fox" = "Vulpes vulpes",
+  "Vulpes vulpes" = "Vulpes vulpes",
+  "Urocyon cinereoargenteus" = "Urocyon cinereoargenteus",  # Gray fox
+
+  # Badger
+  "badger" = "Taxidea taxus",
+  "Badger" = "Taxidea taxus",
+  "American Badger" = "Taxidea taxus",
+  "American badger" = "Taxidea taxus",
+  "Taxidea taxus" = "Taxidea taxus",
+ "Taxidea taxus jeffersonii" = "Taxidea taxus",
+ 
+  # Fisher
+  "fisher" = "Pekania pennanti",
+  "Fisher" = "Pekania pennanti",
+  "Pekania Pennanti" = "Pekania pennanti",
+   "Pekania Pennannti" = "Pekania pennanti",
+  "Pekania pennanti" = "Pekania pennanti",
+ "Martes pennanti" = "Pekania pennanti",
+
+  # Squirrels & marmots
+  "Red squirrel" = "Tamiasciurus hudsonicus",
+  "Red Squirrel" = "Tamiasciurus hudsonicus",
+  "Red  Squirrel" = "Tamiasciurus hudsonicus",
+  "Tamiasciurus hudsonicus" = "Tamiasciurus hudsonicus",
+ "American red squirrel" = "Tamiasciurus hudsonicus",
+  "Flying Squirrel" = "Glaucomys sabrinus",
+  "Squirrel" = "Sciurus sp.",
+  "Squirrel spp" = "Sciurus sp.",
+  "Squirrel spp " = "Sciurus sp.",
+  "Sciurus vulgaris" = "Tamiasciurus hudsonicus", 
+  "FLSQ" = "Glaucomys sabrinus",
+ "Hoary marmot" = "Marmota caligata",
+ 
+ ## Rabbits
+   "Sylvilagus" = "Sylvilagus floridanus",
+ "Cottontail rabbit" = "Sylvilagus floridanus",
+  " Cottontail rabbit" = "Sylvilagus floridanus",
+  "Cottontail rabbit " = "Sylvilagus floridanus",
+      
+ ## Deer
+ "White-tailed deer"= "Odocoileus virginianus",
+ "Mule deer" = "Odocoileus hemionus",
+  "White-tailed Deer"= "Odocoileus virginianus",
+ "Mule Deer" = "Odocoileus hemionus",
+   "White-Tailed Deer"= "Odocoileus virginianus",
+
+ 
+  # Marmot
+  "Marmot" = "Marmota sp.",
+  "Hoary Marmot" = "Marmota sp.",
+
+  # Otter
+  "Otter" = "Lontra canadensis",
+  "River Otter" = "Lontra canadensis",
+  "North American river otter" = "Lontra canadensis",
+  "North American River Otter" = "Lontra canadensis",
+ "North American River otter" = "Lontra canadensis",
+  "Lontra canadensis" = "Lontra canadensis",
+  "Lontra canadensis pacifica" = "Lontra canadensis", 
+
+
+  # Raccoon
+  "raccoon" = "Procyon lotor",
+  "Raccoon" = "Procyon lotor",
+  "Procyon lotor" = "Procyon lotor",
+  "Procyon lotor pacificus" = "Procyon lotor",
+   "Common Raccoon" = "Procyon lotor",
+   "Northern Raccoon" = "Procyon lotor",
+
+
+  # Porcupine
+  "porcupine" = "Erethizon dorsatum",
+  "Porcupine" = "Erethizon dorsatum",
+  "Erethizon dorsatum" = "Erethizon dorsatum",
+
+  # Deer, Elk, Moose, Wolf (excluded species)
+  "white-tailed deer" = "Odocoileus virginianus",
+  "White-tailed Deer" = "Odocoileus virginianus",
+  "Mule deer" = "Odocoileus hemionus",
+  "Mule Deer" = "Odocoileus hemionus",
+  "elk" = "Cervus canadensis",
+  "moose" = "Alces alces",
+  "bear" = "Ursus sp.",
+  "wolf" = "Canis lupus",
+  "Wolf" = "Canis lupus",
+  
+  ## CODES
+  "Lynx Canadensis" = "Lynx canadensis",
+"M-PEPE" = "Pekania pennanti",
+"M-PRLO" = "Procyon lotor",
+"M-MEME" = "Mephitis mephitis", 
+"M-SPGR" = "Spilogale gracilis",
+"M-GUGU" = "Gulo gulo",
+"M-MAAM" = "Martes americana",
+"M-MACU" = "Martes caurina",
+"M-MUER-HA" = "Mustela haidarum",
+"M-MUER" = "Mustela richardsonii",
+"M-MUER-AN" = "Mustela richardsonii",
+"M-MUNI" = "Mustela nivalis",
+"M-MUFR" = "Neogale frenata",
+"M-NEVI" = "Neovison vison",
+"M-TATA" = "Taxidea taxus",
+"M-LYRU" = "Lynx rufus",
+"M-LYCA" = "Lynx canadiensis",
+"M-CALA"= "Canis latrans",
+"M-VUVU" = "Vulpes vulpes",
+"M-LOCA" = "Lontra canadensis",
+
+## Genus
+ "Fox sp."                    = "Vulpes sp.",
+  "Hare sp."                   = "Lepus sp.",
+  "Lynx sp."                   = "Lynx sp.",
+  "Marmot sp."                 = "Marmota sp.",
+  "Marten sp."                 = "Martes sp.",
+  "Squirrel sp."               = "Sciurus sp.",
+  "Weasel sp."                = "Mustela sp."
+)
+
+ 
+species_to_common <- c(
+  # Marten species
+  "marten" = "American marten",
+  "Marten" = "American marten",
+  "American Marten" = "American marten",
+  "Pacific Marten" = "Pacific marten",
+  "Pine Marten" = "American marten",
+  "American marten" = "American marten",
+  "Marten sp " = "Marten sp.",
+  "Marten sp" = "Marten sp.",
+
+  # Mink
+  "American mink" = "American mink",
+  "Neovison vison" = "American mink",
+  "Mustela vison" = "American mink", 
+  "mink" = "American mink", 
+  "Neovison vison" = "American mink",
+  "Neogale vison" = "American mink",
+  "vison"= "American mink",
+
+  # Bobcat & Lynx
+  "bobcat" = "Bobcat",
+  "Bobcat" = "Bobcat",
+  "lynx" = "Canada lynx",
+  "Lynx" = "Canada lynx",
+  "Lynx canadiensis" = "Canada lynx",
+  "Canada lynx" = "Canada lynx",
+  "Canada Lynx" = "Canada lynx",
+  "Bobcat/Lynx" = "Lynx sp.",
+  "Lynx canadensis" = "Canada lynx",
+  "Lynx rufus" = "Bobcat",
+  "canadensis" = "Lynx canadensis",
+
+  # Hare & Rabbit
+  "hare" = "Snowshoe hare",
+  "Snowshoe hare" = "Snowshoe hare",
+  "Snowshoe Hare" = "Snowshoe hare",
+  "Rabbits and hares" = "Hare sp.",
+  "Lepus americanus" = "Snowshoe hare",
+
+  # Wolverine
+  "wolverine" = "Wolverine",
+  "Wolverine" = "Wolverine",
+  "Gulo gulo" = "Wolverine",
+  "Gulo gulo luscus" = "Wolverine",
+  "Wolverine, Luscus Subspecies" = "Wolverine",
+  "Wolverine, Vancouverensis Subspecies" = "Wolverine",
+
+  # Skunk
+  "skunk" = "Striped skunk",
+  "Skunk" = "Striped skunk",
+  "Striped skunk" = "Striped skunk",
+  "Striped Skunk" = "Striped skunk",
+  "striped skunk" = "Striped skunk",
+  "Spilogale gracilis" = "Western spotted skunk",
+  "Mephitis mephitis" = "Striped skunk",
+  "Western Spotted Skunk" = "Western spotted skunk",
+  "Western spotted Skunk" = "Western spotted skunk",
+  "Spilogale" = "Western spotted skunk",
+
+
+  # Coyote
+  "coyote" = "Coyote",
+  "Coyote" = "Coyote",
+  "Canis latrans" = "Coyote",
+  "latrans" = "Coyote",
+
+  # Weasels
+  "weasel" = "Weasel sp.",
+  "Mustela sp" = "Weasel sp.",
+  "Mustela sp " = "Weasel sp.",
+  "Weasels and Ermine" = "Weasel sp.",
+  "Weasel sp " = "Weasel sp.",
+  "Long-tailed weasel" = "Long-tailed weasel",
+  "Long-tailed Weasel" = "Long-tailed weasel",
+  "Mustela frenata" = "Long-tailed weasel",
+  "Neogale frenata" = "Long-tailed weasel",
+  "Short-Tailed Weasel" = "Short-tailed weasel",
+  "Short-tailed Weasel" = "Short-tailed weasel",
+  "Short-Tailed weasel" = "Short-tailed weasel",
+  "Ermine" = "Short-tailed weasel",
+  "Eurasian ermine" = "Short-tailed weasel",
+  "Martes americana"            = "American marten",
+  "Martes caurina"              = "Pacific marten",
+  "Mustela erminea"             = "Short-tailed weasel",
+  "Mustela richardsonii"        = "Short-tailed weasel",
+  "Mustela nivalis"             = "Least weasel",
+  "Least Weasel"                = "Least weasel",
+  "Neogale vison"               = "American mink",
+  "American Mink"               = "American mink",
+  "North American porcupine"    = "North American porcupine",
+  "Mustela haidarum"            = "Haida ermine",
+   "Haida Ermine"            = "Haida ermine",
+
+
+  # Fox
+  "Red fox" = "Red fox",
+  "Red Fox" = "Red fox",
+  "fox" = "Fox sp.",
+  "red fox" = "Red fox",
+  "Vulpes vulpes" = "Red fox",
+  "vulples" = "Red fox",
+  "Urocyon cinereoargenteus" = "Gray fox",
+
+  # Badger
+  "Badger" = "American badger",
+  "badger" = "American badger",
+  "American Badger" = "American badger",
+  "American badger" = "American badger",
+  "Taxidea taxus" = "American badger",
+  "Taxidea taxus jeffersonii" = "American badger",
+
+  # Fisher
+  "Fisher" = "Fisher",
+  "fisher" = "Fisher",
+  "Pekania pennanti" = "Fisher",
+  "pennanti" = "Fisher",
+  "Martes pennanti" = "Fisher",
+
+  # Squirrel
+  "Red squirrel" = "American red squirrel",
+  "Red Squirrel" = "American red squirrel",
+  "Red  Squirrel" = "American red squirrel",
+  "Flying Squirrel" = "Flying squirrel",
+  "Squirrel" = "Squirrel sp.",
+  "Squirrel spp" = "Squirrel sp.",
+  "Squirrel spp " = "Squirrel sp.",
+  "Sciurus vulgaris" = "American red squirrel",
+  "Tamiasciurus hudsonicus" = "American red squirrel",
+
+  # Marmot
+  "Marmot" = "Marmot sp.",
+  "Hoary Marmot" = "Hoary marmot",
+
+  # Otter
+  "Otter" = "North American river otter",
+  "River Otter" = "North American river otter",
+  "North American river otter" = "North American river otter",
+  "North American River Otter" = "North American river otter",
+  "Lontra canadensis" = "North American river otter",
+
+  # Other species
+  "raccoon" = "Raccoon",
+  "Raccoon" = "Raccoon",
+  "Procyon lotor" = "Raccoon",
+  "Porcupine" = "North American porcupine",
+  "porcupine" = "North American porcupine",
+  "Erethizon dorsatum" = "North American porcupine",
+
+  # Others you mentioned
+  "Sylvilagus" = "Cottontail rabbit",
+  "Cottontail rabbit" = "Cottontail rabbit",
+  
+  ## CODES
+  "Lynx Canadensis" = "Canada lynx",
+"M-PEPE" = "Fisher",
+"M-PRLO" = "Raccoon",
+"M-MEME" = "Striped skunk", 
+"M-SPGR" = "Western spotted skunk",
+"M-GUGU" = "Wolverine",
+"M-MAAM" = "American marten",
+"M-MACU" = "Pacific marten",
+"M-MUER-HA" = "Haida ermine",
+"M-MUER" = "Short-tailed weasel",
+"M-MUER-AN" = "Short-tailed weasel",
+"M-MUNI" = "Least weasel",
+"M-MUFR" = "Long-tailed weasel",
+"M-NEVI" = "American mink",
+"M-TATA" = "American badger",
+"M-LYRU" = "Bobcat",
+"M-LYCA" = "Canada lynx",
+"M-CALA"= "Coyote",
+"M-VUVU" = "Red fox",
+"M-LOCA" = "North American river otter",
+"FLSQ" = "Flying squirrel"
+)
+
+standardize_species_names <- function(df) {
+  df %>%
+    mutate(
+      Species_common_name = recode(Species, !!!species_to_common, .default = Species),
+      Species_scientific  = recode(Species, !!!species_to_scientific, .default = NA_character_)
+    )
+}
+
+
+
+```
+
+
+3. Collate Camera Trap Projects submitted outside of SPI
 
 ```{r}
-knitr::opts_knit$set(echo=TRUE, root.dir = "C:/LocalR/Merge_datacollation_2025/Input_project_sheets")
-# setwd("C:/LocalR/Merge_datacollation_2025/Input_project_sheets")
+knitr::opts_knit$set(echo=TRUE, root.dir = "1. Input camera project sheets")
 getwd()
 
-file.list <- list.files(path = "C:/LocalR/Merge_datacollation_2025/Input_project_sheets", 
+file.list <- list.files(path = "1. Input camera project sheets", 
                         pattern = "*.xlsx", full.names = TRUE)
 master_data <- list()
 
@@ -100,14 +520,18 @@ column_mapping <- c(
   "UTM_Zone" = "zone",
   "Zone" = "zone",
   "Camera.Deployment.Begin.Date" = "Start_Deployment_date",
+  "Start.Deployment_date" = "Start_Deployment_date",
   "Deploy_Date"  = "Start_Deployment_date",
   "start_date" = "Start_Deployment_date",
+  "Start_date" = "Start_Deployment_date",
   "Begin_date" = "Start_Deployment_date",
   "Camera.Deployment.End.Date" = "End_Deployment_date",
+  "End.Deployment_date" = "End_Deployment_date",
   "End_date" = "End_Deployment_date",
   "Retrieval_Date" = "End_Deployment_date",
   "end_date" = "End_Deployment_date",
   "Bait.Type" = "Bait_lure",
+  "cam_make" = "Camera_make",
   "Height.cm" = "Camera_height", 
   "Feature.Type" = "Target_feature",
   "feature_type" ="Target_feature",
@@ -119,7 +543,9 @@ column_mapping <- c(
   "Number" = "Count",
   "sp" = "Species",
   "Species1" = "Species",
+  "Species_orig" = "Species",
   "species_common_name" = "Species",
+  "Species_common_name" = "Species",
   "Species.Common.Name" = "Species",
   "common_name" = "Species",
   "species" = "Species",
@@ -185,19 +611,17 @@ for (i in seq_along(file.list)) {
   
   # Standardize deployment data
   deployment_data <- df_cam %>%
-    select(any_of(c("Station_ID", "Latitude", "Longitude", "Start_Deployment_date", 
+    dplyr::select(any_of(c("Station_ID", "Latitude", "Longitude", "Start_Deployment_date", 
                     "End_Deployment_date", "Camera_make", "Camera_model", "Camera_height", "Bait_lure", "Target_feature"))) %>%
     mutate(across(c(Start_Deployment_date, End_Deployment_date), ~ suppressWarnings(as.Date(.))),
            Project_name = project_name)
   
   # Standardize species data
   species_data <- df_sp %>%
-    select(any_of(c("Station_ID", "Species", "Count", "Date_Time"))) %>%
+    dplyr::select(any_of(c("Station_ID", "Species", "Count", "Date_Time"))) %>%
     mutate(Project_name = project_name, # Assign cleaned project name
            Species = gsub("\\.", " ", Species))  # Replace periods with spaces in Species column
   
-            # Date_Time = as.POSIXct(Date_Time, tz = "UTC", format = "%Y-%m-%d %H:%M:%S"))
-
   ## fix Date_Time formatting
 if ("Date_Time" %in% colnames(species_data)) {
   species_data <- species_data %>%
@@ -214,195 +638,7 @@ if ("Date_Time" %in% colnames(species_data)) {
 
   # Remove unwanted species
 species_data <- species_data %>%
-  filter(!Species %in% c("Mice, voles, shrews", "Rat", "Cougar", "Bird", "Moose", "Deer", "Martes martes", "Lynx lynx", "Unknown/Indeterminate","-", "NA"))
-
-
-# Standardize species names to scientific names
-species_data$Species_scientific <- recode(species_data$Species,
-  # Marten species
-  "marten" = "Martes sp.",
-  "Marten" = "Martes sp.",
-  "American Marten" = "Martes americana",
-  "Pacific Marten" = "Martes caurina",
-
-  # Bobcat & Lynx
-  "bobcat" = "Lynx rufus",
-  "Bobcat" = "Lynx rufus",
-  "lynx" = "Lynx canadensis",
-  "Lynx" = "Lynx canadensis",
-  "Lynx canadiensis" = "Lynx canadensis",
-  "Canada lynx" = "Lynx canadensis",
-  "Canada Lynx" = "Lynx canadensis",
-  "Bobcat/Lynx" = "Lynx sp.",
-
-  # Hare & Rabbit
-  "hare" = "Lepus americanus",
-  "Snowshoe hare" = "Lepus americanus",
-  "Snowshoe Hare" = "Lepus americanus",
-  "Rabbits and hares" = "Lepus sp.",
-
-  # Wolverine
-  "wolverine" = "Gulo gulo",
-  "Wolverine" = "Gulo gulo",
-
-  # Skunk
-  "skunk" = "Mephitis mephitis",
-  "Skunk" = "Mephitis mephitis",
-  "Striped skunk" = "Mephitis mephitis",
-  "Striped Skunk" = "Mephitis mephitis",
-
-  # Coyote
-  "coyote" = "Canis latrans",
-  "Coyote" = "Canis latrans",
-
-  # Weasels
-  "weasel" = "Mustela sp.",
-  "Mustela sp" = "Mustela sp.",
-  "Mustela sp " = "Mustela sp.",
-  "Weasels and Ermine" = "Mustela sp.",
-  "Long-tailed weasel" = "Neogale frenata",
-  "Short-Tailed Weasel" = "Mustela erminea",
-  "Ermine" = "Mustela sp.",
-
-  # Fox
-  "Red fox" = "Vulpes vulpes",
-  "Red Fox" = "Vulpes vulpes",
-  "fox" = "Vulpes vulpes",
-
-  # Badger
-  "Badger" = "Taxidea taxus",
-  "American Badger" = "Taxidea taxus",
-
-  # Fisher
-  "Fisher" = "Pekania pennanti",
-
-  # Squirrel
-  "Red squirrel" = "Sciurus vulgaris",
-  "Red Squirrel" = "Sciurus vulgaris",
-  "Red  Squirrel" = "Sciurus vulgaris",
-  "Flying Squirrel" = "Glaucomys sabrinus",
-  "Squirrel" = "Sciurus sp.",
-
-  # Marmot
-  "Marmot" = "Marmota sp.",
-  "Hoary Marmot" = "Marmota sp.",
-
-  # Otter
-  "Otter" = "Lontra canadensis",
-  "River Otter" = "Lontra canadensis",
-
-  # Other species
-  "Raccoon" = "Procyon lotor",
-  "Porcupine" = "Erethizon dorsatum"
-)
-
-# Standardize species names to scientific names
-species_data$Species_common_name <- recode(species_data$Species,
-  # Marten species
-  "marten" = "Marten sp.",
-  "Marten" = "Marten sp.",
-  "American Marten" = "American marten",
-  "Martes americana" = "American marten",
-  "Pacific Marten" = "Pacific marten",
-  "Martes caurina" = "Pacific marten",
-  
-  #Wolverine
-  "Gulo gulo" = "Wolverine",
-
-  # Bobcat & Lynx
-  "bobcat" = "Bobcat",
-  "Bobcat" = "Bobcat",
-  "lynx" = "Canada lynx",
-  "Lynx" = "Canada lynx",
-  "Lynx canadiensis" = "Canada lynx",
-  "Canada lynx" = "Canada lynx",
-  "Canada Lynx" = "Canada lynx",
-  "Bobcat/Lynx" = "Lynx sp.",
-  "Lynx canadensis" = "Canada lynx",
-  "Lynx rufus" = "Bobcat",
-  
-  #Mink
-  "mink" = "American mink", 
-  "Neovison vison" = "American mink",
-  "Neogale vison" = "American mink",
-
-  # Hare & Rabbit
-  "hare" = "Snowshoe hare",
-  "Snowshoe hare" = "Snowshoe hare",
-  "Snowshoe Hare" = "Snowshoe hare",
-  "Rabbits and hares" = "Hare sp.",
-  "Lepus americanus" = "Snowshoe hare",
-
-  # Wolverine
-  "wolverine" = "Wolverine",
-  "Wolverine" = "Wolverine",
-
-  # Skunk
-  "skunk" = "Striped skunk",
-  "Skunk" = "Striped skunk",
-  "Striped skunk" = "Striped skunk",
-  "Striped Skunk" = "Striped skunk",
-  "Spilogale gracilis" = "Western spotted skunk",
-  "Mephitis mephitis" = "Striped skunk",
-
-  # Coyote
-  "coyote" = "Coyote",
-  "Coyote" = "Coyote",
-  "Canis latrans" = "Coyote",
-
-  # Weasels
-  "weasel" = "Weasel sp.",
-  "Mustela sp" = "Weasel sp.",
-  "Mustela sp " = "Weasel sp.",
-  "Weasels and Ermine" = "Weasel sp.",
-  "Long-tailed weasel" = "Long-tailed weasel",
-  "Short-Tailed Weasel" = "Short-tailed weasel",
-  "Ermine" = "Weasel sp.",
-  "Neogale frenata" = "Long-tailed weasel",
-  "Mustela frenata" = "Long-tailed weasel",
-  "Mustela nivalis" = "Least weasel",
-  "Mustela erminea" = "Eurasian ermine",
-  
-
-  # Fox
-  "Red fox" = "Red fox",
-  "Red Fox" = "Red fox",
-  "fox" = "Fox sp.",
-  "Vulpes vulpes" = "Red fox",
-  "Urocyon cinereoargenteus" = "Gray fox",
-
-  # Badger
-  "Badger" = "American badger",
-  "American Badger" = "American badger",
-  "Taxidea taxus" = "American badger",
-
-  # Fisher
-  "Fisher" = "Fisher",
-  "Pekania pennanti" = "Fisher",
-
-  # Squirrel
-  "Red squirrel" = "Red squirrel",
-  "Red Squirrel" = "Red squirrel",
-  "Red  Squirrel" = "Red squirrel",
-  "Flying Squirrel" = "Flying squirrel",
-  "Squirrel" = "Squirrel sp.",
-  "Tamiasciurus hudsonicus" = "American red squirrel",
-
-  # Marmot
-  "Marmot" = "Marmot sp.",
-  "Hoary Marmot" = "Hoary marmot",
-
-  # Otter
-  "Otter" = "North American river otter",
-  "River Otter" = "North American river otter",
-  "Lontra canadensis" = "North American river otter",
-
-  # Other species
-  "Raccoon" = "Raccoon",
-  "Procyon lotor" = "Raccoon",
-  "Porcupine" = "North American porcupine", 
-  "Erethizon dorsatum" = "North American porcupine"
-)
+  filter(!Species %in% c("Mice, voles, shrews", "Rat", "wolf", "Gray wolf", "people", "deer", "white-tailed deer", "mule deer", "White-tailed deer", "Mule deer", "Gray fox", "elk", "moose", "bear", "Cougar", "Bird", "Moose", "Deer", "Martes martes", "Lynx lynx", "Unknown/Indeterminate","-", "NA"))
 
   # Verify all stations in species and deployments match
   unmatched_stations <- species_data %>% filter(!Station_ID %in% deployment_data$Station_ID)
@@ -415,10 +651,16 @@ species_data$Species_common_name <- recode(species_data$Species,
 master_deployment <- bind_rows(lapply(master_data, "[[", "deployment"))
 master_species <- bind_rows(lapply(master_data, "[[", "species"))
 
+
+master_species <- master_species %>%
+  standardize_species_names()
+
+table(master_species$Species_common_name)
+
+
 ``` 
 
-
-Create a table with project names and deployment years for metadata file
+4. *Skip* Create a table with project names and deployment years for metadata file
 ```{r}
 # Ensure date columns are in Date format
 master_deployment <- master_deployment %>%
@@ -444,30 +686,11 @@ print(project_year_summary)
 
 ```
 
-
-
-Load the SPI camera data files and standardize to the same formatting as above.
-
-
+5. Load the SPI camera data files and standardize to the same formatting as above.
 ```{r}
-library(readxl)
-library(dplyr)
-library(tidyr)
-library(lubridate)
 
-# setwd("C:/LocalR/Merge_datacollation_2025/SPI_cameradata_March2025")
-# 
-# spi_deploy <- read.csv(file="spi_cam_deploy_March2025.csv", header=T)
-#   spi_start <- read.csv(file="spi_cam_start_March2025.csv", header=T)
-# 
-#   # Join spi_deploy to spi_start by CAMERA_LABEL
-# spi_combined <- spi_start %>%
-#   left_join(spi_deploy, by = "CAMERA_LABEL", relationship = "many-to-many")
-#   
-#  write.csv(spi_combined, file="spi_cameras_March2025.csv") 
-  
 # File paths
-file.list <- list.files(path = "C:/LocalR/Merge_datacollation_2025/SPI_cameradata_March2025", 
+file.list <- list.files(path = "4. SPI cam data March 2025", 
                         pattern = "*.xlsx", full.names = TRUE)
 master_spi_data <- list()  # Initialize storage list
 
@@ -514,31 +737,17 @@ for (i in seq_along(file.list)) {
   
   # Standardize deployment data
   deployment_spi_data <- spi_cam %>%
-    select(any_of(c("Project_name", "SPI_Project_ID", "Station_ID", "Latitude", "Longitude", "Start_Deployment_date", "End_Deployment_date", "Camera_days", 
+    dplyr::select(any_of(c("Project_name", "SPI_Project_ID", "Station_ID", "Latitude", "Longitude", "Start_Deployment_date", "End_Deployment_date", "Camera_days", 
                     "Camera_make", "Camera_model", "Camera_height", "Bait_lure", "Target_feature"))) %>%
     mutate(across(c(Start_Deployment_date, End_Deployment_date), ~ suppressWarnings(as.Date(.))))
 
   # Standardize species data
   species_spi_data <- spi_sp %>%
-    select(any_of(c("Project_name", "SPI_Project_ID", "Station_ID","Species_scientific",
+    dplyr::select(any_of(c("Project_name", "SPI_Project_ID", "Station_ID","Species_scientific",
                     "Species_common_name" , "Count", "Date_Time"))) %>%
     mutate(Date_Time = parse_date_time(Date_Time, orders = c("ymd HMS", "ymd HM", "ymd H", "ymd")))
   
-  # Standardize species names to match the other projects
-species_spi_data$Species_common_name <- recode(species_spi_data$Species_common_name,
-
-  "American Marten" = "American marten",
-  "White-tailed Deer" = "White-tailed deer",
-  "Mule Deer" = "Mule deer",
-  "Canada Lynx" = "Canada lynx",
-  "Snowshoe Hare" = "Snowshoe hare",
-  "Red Fox"  = "Red fox",
-  "Red Squirrel" = "Red squirrel",
-  "Flying Squirrel" = "Flying squirrel",
-  "Short-Tailed Weasel" = "Short-tailed weasel"
-  )
-
-  # Verify unmatched stations
+   # Verify unmatched stations
   unmatched_spi_stations <- species_spi_data %>% filter(!Station_ID %in% deployment_spi_data$Station_ID)
   
   # Store results
@@ -553,11 +762,8 @@ master_spi_species <- bind_rows(lapply(master_spi_data, "[[", "species"))
 
 ```
 
-
-Merge camera data from shiny app projects, SPI, FN and other government secure files 
-
+6. Merge camera data from shiny app projects, SPI, FN and other government secure files 
 ```{r}
-## Join all deployments
 # Ensure all columns in master_spi_deployment are present in master_deployment
 missing_cols <- setdiff(names(master_spi_deployment), names(master_deployment))
 master_deployment[missing_cols] <- NA
@@ -576,24 +782,27 @@ all_species_cams <- bind_rows(master_spi_species, master_species)
 # View result
 head(all_species_cams)
 
-## Save a copy to date:
-setwd("C:/LocalR/Merge_datacollation_2025/Master_camera_data") 
-write.csv(all_cam_deployments, file="All_cam_deployments_March2025.csv")
-write.csv(all_species_cams, file="All_camsp_detections_March2025.csv")
-
 
 ### Add lat and long to all_species_cams
 all_species_cams <- all_species_cams %>%
   left_join(
     all_cam_deployments %>%
-      select(Station_ID, Latitude, Longitude) %>%
+      dplyr::select(Station_ID, Latitude, Longitude) %>%
       distinct(Station_ID, .keep_all = TRUE),  # Keep unique Station_ID-Latitude-Longitude
     by = "Station_ID"
   )
+
+all_species_cams$Species <- all_species_cams$Species_common_name
+all_species_cams <- all_species_cams %>% standardize_species_names()
+
+table(all_species_cams$Species_common_name)
+table(all_species_cams$Species_scientific)
+
+
 ```
 
 
-Rarify all camera species detections to 30 min independent events
+7. Rarify all camera species detections to 30 min independent events
 ```{r}
 # Ensure Date_Time is in POSIXct format
 all_species_cams <- all_species_cams %>%
@@ -611,25 +820,40 @@ master_species_filtered <- all_species_cams %>%
 head(master_species_filtered)
 
 table(master_species_filtered$Species_common_name)
+table(master_species_filtered$Species_scientific)
+
 
 ```
 
-Join to project metadata file (This is updated in excel as new projects are submitted)
+8. Join to project metadata file (This is updated in excel as new projects are submitted)
   - Data source (Academic, Government-Not in SPI, First Nations, SPI)
   - Project ID (if in SPI)
   - Contact information: First Name, Last Name, E-mail
   - Project Data Sharing Permissions
   - Comments
 
-Search for projects that contain a species of interest and the contact details for the project
-
 ```{r}
+metadata <- read_excel("Stakeholders_database_2025.xlsx", sheet = "Metadata")
 
-setwd("C:/LocalR/Merge_datacollation_2025")
-metadata <- read.csv("MMP_Project_Metadata.csv", header=T)
+master_species_filtered$Species <- master_species_filtered$Species_common_name
+master_species_filtered <- master_species_filtered %>%
+  standardize_species_names()
 
 master_species_meta <- master_species_filtered %>%  left_join(metadata, by = "Project_name")
 
+
+
+table(master_species_filtered$Species_common_name)
+table(master_species_filtered$Species_scientific)
+
+
+## Save a copy to date:
+write.csv(all_cam_deployments, file="5. Master data cleaned/Camera data only/All_cam_deployments_Nov2025.csv")
+write.csv(master_species_meta, file="5. Master data cleaned/Camera data only/All_camsp_detections_Nov2025.csv")
+```
+
+*SKIP* Search for projects that contain a species of interest and the contact details for the project
+```{r}
 ### Filter for a species ###
 
 # Filter for Wolverine records
@@ -648,15 +872,8 @@ print(wolverine_summary)
 ```
 
 
-Create a basic interactive map of the camera deployments
-
+9. *Skip* Create a basic interactive map of the camera deployments
 ```{r}
-library(tmap)
-library(sf)
-library(dplyr)
-library(viridis)
-library(tmap)
-
 # Convert master_deployment to an sf object, ensuring valid coordinates
 camera_stations <- all_cam_deployments %>%
   drop_na(Latitude, Longitude) %>%
@@ -679,41 +896,41 @@ tm_basemap("OpenStreetMap") +
 
 ```
 
-Create a basic interactive map from the camera species detections
-
+10. *Skip* Create a basic interactive map from the camera species detections
 ```{r}
-# Load required libraries
-library(ggplot2)
-library(ggmap)
-library(dplyr)
-library(tmap)
-library(viridis)
-
 # Ensure Station_ID is the same type in both dataframes
 master_species_join <- master_species_meta %>%
   left_join(
     all_cam_deployments %>%
-      select(Station_ID, Latitude, Longitude) %>%
+      dplyr::select(Station_ID, Latitude, Longitude) %>%
       distinct(Station_ID, .keep_all = TRUE),  # Keep unique Station_ID-Latitude-Longitude
     by = "Station_ID"
   )
 
-# Filter for Pekania pennanti and remove NA coordinates
-species_map_data <- master_species_join %>%
-  filter(Species_common_name == "Wolverine") %>% #Pekania pennanti
-  drop_na(Latitude, Longitude) %>%
-  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326)  # Convert to sf spatial object
+bad_cols <- sapply(master_species_join, function(x) {
+  is.character(x) && any(is.na(iconv(x, from = "", to = "UTF-8")))
+})
 
-# Interactive map with OpenStreetMap
-tmap_mode("view")  # Use "plot" instead for a static map
+master_species_join[bad_cols] <- lapply(master_species_join[bad_cols], function(x) {
+  iconv(x, from = "", to = "UTF-8", sub = "byte")
+})
+
+
+tmap_mode("view")
+
+species_map_data <- master_species_join %>%
+  filter(Species_common_name == "Wolverine") %>%
+  drop_na(Latitude.x, Longitude.x) %>%
+  st_as_sf(coords = c("Longitude.x", "Latitude.x"), crs = 4326)
+
 tm_basemap("OpenStreetMap") +
   tm_shape(species_map_data) +
   tm_dots(col = "red", size = 0.2) +
-  tm_layout(title = "Wolverine Camera Detections in British Columbia")
+  tm_title("Wolverine Camera Detections in British Columbia")
+
 ```
 
-Extract species specific data observations as its own csv file with latitude and longitude associated 
-
+11. *Skip* Extract species specific data observations as its own csv file with latitude and longitude associated 
 ```{r}
 # Extract coordinates
 species_map_data <- species_map_data %>%
@@ -726,7 +943,7 @@ head(species_map_data)
 
 ## Export
 setwd("C:/LocalR/Merge_datacollation_2025/Output_camera_detections")
-write.csv(species_map_data, file="Fisher_cam_detections_temp_March2025.csv")
+write.csv(species_map_data, file="Fisher_cam_detections_temp_Jul2025.csv")
 
 fisher_detection_data <- read.csv("Fisher_cam_detections_temp_March2025.csv")
 # Filter for Pekania pennanti and remove NA coordinates
@@ -741,9 +958,7 @@ tm_basemap("OpenStreetMap") +
   tm_layout(title = "Fisher Camera Detections in British Columbia")
 ```
 
-#############################################################################
-
-Let's add in the incidental data and the DNA data to the camera species list (with coordinates) and attach the metadata 
+12. Add in the incidental data and the DNA data to the camera species list (with coordinates) and attach the metadata 
 
 Notes:
 - The DNA collation R script needs to be redone like the camera data script
@@ -752,98 +967,19 @@ Notes:
 
 ```{r}
 ## Add the DNA database
-setwd("C:/LocalR/Merge_datacollation_2025/DNA_records")
-
-DNA_data <- read.csv(file="DNA_presence_only_03-06.csv", header=T)
-
-# Standardize species names to scientific names
-DNA_data$Species_scientific <- recode(DNA_data$Species,
-"Lynx Canadensis" = "Lynx canadensis",
-"M-PEPE" = "Pekania pennanti",
-"M-PRLO" = "Procyon lotor",
-"M-MEME" = "Mephitis mephitis", 
-"M-SPGR" = "Spilogale gracilis",
-"M-GUGU" = "Gulo gulo",
-"M-MAAM" = "Martes americana",
-"M-MACU" = "Martes caurina",
-"M-MUER-HA" = "Mustela haidarum",
-"M-MUER" = "Mustela erminea",
-"M-MUER-AN" = "Mustela erminea",
-"M-MUNI" = "Mustela nivalis",
-"M-MUFR" = "Neogale frenata",
-"M-NEVI" = "Neovison vison",
-"M-TATA" = "Taxidea taxus",
-"M-LYRU" = "Lynx rufus",
-"M-LYCA" = "Lynx canadiensis",
-"M-CALA"= "Canis latrans",
-"M-VUVU" = "Vulpes vulpes",
-"M-LOCA" = "Lontra canadensis"
- )
-
-# Standardize species names to scientific names
-DNA_data$Species_common_name <- recode(DNA_data$Species,
-                                           
- "Lynx Canadensis" = "Canada lynx",
-"M-PEPE" = "Fisher",
-"M-PRLO" = "Raccoon",
-"M-MEME" = "Striped skunk", 
-"M-SPGR" = "Western spotted skunk",
-"M-GUGU" = "Wolverine",
-"M-MAAM" = "American marten",
-"M-MACU" = "Pacific marten",
-"M-MUER-HA" = "Haida ermine",
-"M-MUER" = "Short-tailed weasel",
-"M-MUER-AN" = "Short-tailed weasel",
-"M-MUNI" = "Least weasel",
-"M-MUFR" = "Long-tailed weasel",
-"M-NEVI" = "American mink",
-"M-TATA" = "American badger",
-"M-LYRU" = "Bobcat",
-"M-LYCA" = "Canada lynx",
-"M-CALA"= "Coyote",
-"M-VUVU" = "Red fox",
-"M-LOCA" = "North American river otter",
-"FLSQ" = "Flying squirrel",
-
-  "Martes americana" = "American marten",
-  "Martes caurina" = "Pacific marten",
-  "Gulo gulo" = "Wolverine",
-  "Lynx canadiensis" = "Canada lynx",
-  "Lynx canadensis" = "Canada lynx",
-  "Lynx rufus" = "Bobcat",
-  "Neovison vison" = "American mink",
-  "Neogale vison" = "American mink",
-  "Lepus americanus" = "Snowshoe hare",
-  "Striped Skunk" = "Striped skunk",
-  "Spilogale gracilis" = "Western spotted skunk",
-  "Mephitis mephitis" = "Striped skunk",
-  "Canis latrans" = "Coyote",
-  "Neogale frenata" = "Long-tailed weasel",
-  "Mustela frenata" = "Long-tailed weasel",
-  "Mustela nivalis" = "Least weasel",
-  "Mustela erminea" = "Eurasian ermine",
-  "Vulpes vulpes" = "Red fox",
-  "Urocyon cinereoargenteus" = "Gray fox",
-  "Taxidea taxus" = "American badger",
-  "Pekania pennanti" = "Fisher",
-  "Tamiasciurus hudsonicus" = "American red squirrel",
-  "Lontra canadensis" = "North American river otter",
-  "Procyon lotor" = "Raccoon",
-  "Porcupine" = "North American porcupine", 
-  "Erethizon dorsatum" = "North American porcupine"
-)
-
-table(DNA_data$Species_common_name)
-
+DNA_data <- read.csv(file="3. DNA records/DNA_presence_only_03-06.csv", header=T)
+DNA_data <- DNA_data %>% standardize_species_names()
 ## remove any duplicates
-# DNA_data$Date_Time <- as.Date(DNA_data$End_Deployment_date, format = "%Y-%m-%d %H:%M:%s")
+ DNA_data$Date <- as.Date(DNA_data$End_Deployment_date, format = "%Y-%m-%d")
 
-
+ 
+DNA_data$Species <- DNA_data$Species_common_name
+DNA_data <- DNA_data %>% standardize_species_names()
+table(DNA_data$Species_common_name)
+table(DNA_data$Species_scientific)
 ```
 
-
-
-Get the project start and end dates
+13. *Skip* Get the project start and end dates for the metadata file
 ```{r}
 DNA_deployment <-DNA_data %>%
   mutate(
@@ -867,7 +1003,7 @@ DNA_project_year_summary <- DNA_deployment %>%
 print(DNA_project_year_summary)
 ```
 
-
+14. Join the camera and DNA data 
 ```{r}
 
 #Join camera data and DNA data
@@ -880,28 +1016,25 @@ all_cams_dna_species <- bind_rows(master_species_filtered, DNA_data)
 
 
 #load metadata if you haven't already
-setwd("C:/LocalR/Merge_datacollation_2025")
 metadata <- read.csv("MMP_Project_Metadata.csv", header=T)
 
 cams_dna_sp_meta <- all_cams_dna_species %>%  left_join(metadata, by = "Project_name")
 cams_dna_sp_meta$Date <- as.Date(cams_dna_sp_meta$Date, format="%Y-%m-%d")
 
+getwd()
 
-
-write.csv(cams_dna_sp_meta, file="Cam_DNA_species_March2025.csv")
+write.csv(cams_dna_sp_meta, file="5. Master data cleaned/Camera DNA data/Cam_DNA_species_Nov2025.csv")
 
 table(cams_dna_sp_meta$Species_common_name)
+table(cams_dna_sp_meta$Species_scientific)
+
 
 ```
 
-
-Add incidental data from spi (2023 data with incorrect count until Sultana can get us new extraction)
-
+15. Add incidental data from spi (2023 data with incorrect count until Sultana can get us new extraction)
 ```{r}
 ## Add Incidentals
-setwd("C:/LocalR/Merge_datacollation_2025/Input_incidental_sheets")
-
-inci_spi_data <- read.csv(file="SPI_Incidentals_Oct2023.csv", header=T)
+inci_spi_data <- read.csv(file="2. Input incidental sheets/SPI_Incidentals_Oct2023.csv", header=T)
 
 # Column mapping
 column_mapping <- c(
@@ -924,7 +1057,7 @@ column_mapping <- c(
   "OBSERVATION_DATETIME" = "Date_Time",
   "TRAP_HEIGHT" = "Camera_height",
   "VISIT_TIME_SPAN" = "Camera_days",
-  "SPECIES_ENGLISH_NAME" = "Species_common_name",
+  "SPECIES_ENGLISH_NAME" = "Species",
   "SCIENTIFIC_NAME" = "Species_scientific" 
 )
 
@@ -938,91 +1071,6 @@ standardize_columns <- function(df) {
 inci_spi_data <- inci_spi_data %>% standardize_columns()
 
 
-# Standardize species names to scientific names
-inci_spi_data$Species_common_name <- recode(inci_spi_data$Species_common_name,
-  # Marten species
-  "marten" = "Marten sp.",
-  "Marten" = "Marten sp.",
-  "American Marten" = "American marten",
-  "Martes americana" = "American marten",
-  "Pacific Marten" = "Pacific marten",
-  "Martes caurina" = "Pacific marten",
-  
-  # Bobcat & Lynx
-  "bobcat" = "Bobcat",
-  "lynx" = "Canada lynx",
-  "Lynx" = "Canada lynx",
-  "Lynx canadiensis" = "Canada lynx",
-  "Canada Lynx" = "Canada lynx",
-  "Bobcat/Lynx" = "Lynx sp.",
-
-  #Mink
-  "American Mink" = "American mink", 
-
-  # Hare & Rabbit
-  "Snowshoe hare" = "Snowshoe hare",
-  "Snowshoe Hare" = "Snowshoe hare",
-  "Rabbits and hares" = "Hare sp.",
-
-  # Wolverine
-  "wolverine" = "Wolverine",
-  "Wolverine, Luscus Subspecies" = "Wolverine",
-  "Wolverine, Vancouverensis Subspecies" = "Wolverine",
-
-  # Skunk
-  "Skunk" = "Striped skunk",
-  "Striped skunk" = "Striped skunk",
-  "Striped Skunk" = "Striped skunk",
-  "Western Spotted Skunk" = "Western spotted skunk",
-  
-
-  # Coyote
-  "coyote" = "Coyote",
-  "Coyote" = "Coyote",
-
-  # Weasels
-  "weasel" = "Weasel sp.",
-  "Mustela sp" = "Weasel sp.",
-  "Mustela sp " = "Weasel sp.",
-  "Weasels and Ermine" = "Weasel sp.",
-  "Long-tailed Weasel" = "Long-tailed weasel",
- "Long-Tailed Weasel" = "Long-tailed weasel",
-  "Short-tailed Weasel" = "Short-tailed weasel",
-  "Short-Tailed Weasel" = "Short-tailed weasel",
- "Long-tailed weasel, altifrontalis subspecies" = "Long-tailed weasel",
- 
-  # Fox
-  "Gray Fox" = "Gray fox",
-  "Red Fox" = "Red fox",
-  "fox" = "Fox sp.",
-
-  # Badger
-  "American Badger" = "American badger",
-
-  # Fisher
-  "Fisher" = "Fisher",
-
-  # Squirrel
- "American Red Squirrel" = "American red squirrel",
-  "Red squirrel" = "Red squirrel",
-  "Red Squirrel" = "Red squirrel",
-  "Red  Squirrel" = "Red squirrel",
-  "Flying Squirrel" = "Flying squirrel",
-  "Squirrel" = "Squirrel sp.",
-
-  # Marmot
-  "Marmot" = "Marmot sp.",
-  "Hoary Marmot" = "Hoary marmot",
-
-  # Otter
-  "North American River Otter" = "North American river otter",
-"North American River Otter pacifica" = "North American river otter",
-
-  # Other species
-"Raccoon pacificus" = "Raccoon",
-  "North American Porcupine" = "North American porcupine", 
-)
-
 inci_spi_data$Data_Sharing_Categorization <- "Government "
 inci_spi_data$Data_type <- "Incidental"
 inci_spi_data$Date <- as.Date(inci_spi_data$Date_Time, format="%Y-%m-%d")
@@ -1031,14 +1079,20 @@ inci_spi_data$Date_Time2 <- as.Date(inci_spi_data$Date_Time, format = "%Y-%m-%d 
 inci_spi_data$Date_Time <- as.POSIXct(inci_spi_data$Date_Time, format = "%Y-%m-%d %H:%M")
 inci_spi_data$SPI_Project_ID
 
+inci_spi_data <- inci_spi_data %>% standardize_species_names()
+
+table(inci_spi_data$Species_common_name)
+table(inci_spi_data$Species_scientific)
+
+
 ```
 
-Load other incidentals clipped to BC Boundary
+16. Load other incidentals clipped to BC Boundary
 
+Note: I clipped this in ArcGIS because of issues clipping in R. Feel free to try recoding the clip.
 ```{r}
 # Set working directory
-setwd("C:/LocalR/Merge_datacollation_2025/Input_incidental_sheets")
-incidentals_clip <- read.csv(file="Incidentals_March2025_clip.csv", header=T)
+incidentals_clip <- read.csv(file="2. Input incidental sheets/Incidentals_March2025_clip.csv", header=T)
 
 incidentals_clip <- incidentals_clip %>%
   mutate(
@@ -1055,20 +1109,64 @@ incidentals_clip$Species_common_name <- recode(incidentals_clip$Species_common_n
         "Lynx rufus"= "Bobcat",
         "Mustela haidarum"= "Haida ermine")
         
-table(incidentals_clip$Species_common_name)
+### There are many outliers from the museum records in this incidentals sheet. Since these data do not have dates associated with them, they could be from prior to 2000. 
+### Species records that are in the museum records and *far* out of range are considered not credible sources.
+### For example, bobcat, red fox, canada lynx occurrences on Vancouver Island
+
+## Note that on April 23 2025 - after this aforementioned note, I corrected the badger museum records by 6 degrees longitude. The records were clearly converted incorrectly from UTM 11 into UTM 10 and have now been adjusted in the incidental sheet. I have not made other adjustments to coordinates in the museum records for other species, though suspect that there may be similar errors. 
+
+#Subset the data to exclude sources that are "Not credible" under "Credibility"
+
+incidentals_clip <- incidentals_clip %>% 
+  filter(is.na(Credibility) | Credibility != "Not credible")
+
+
+#############
+Inat_data <- read.csv(file="2. Input incidental sheets/INat_observations_2000_2025.csv", header=T)
+
+
+## Positions in INaturalist are either exact or estimated with a radius. Let's keep anything below 1 km radius in precision. If the points are wayy off, it won't help us. 
+Inat_data <- Inat_data %>% filter(quality_grade=="research", positional_accuracy < 2000)
+
+Inat_data <- Inat_data %>%
+  rename(Species = common_name,
+         Species_scientific = scientific_name,
+         Latitude = latitude,
+         Longitude = longitude, 
+         Date = observed_on,
+         Datetime = time_observed_at,
+         Observer_ID = user_name,
+         Credibility = quality_grade
+         )
+
+Inat_data <- Inat_data %>%
+  mutate(
+    Type_of_record = "INaturalist",
+    Date_type = "Incidental",
+    Project_name = "INaturalist.org",
+    Start_Deployment_date = "",
+    End_Deployment_date = "",
+    Time = Datetime, 
+    Habitat_type = "",
+    Count = 1, 
+    Data_Sharing_Categorization = "Public",
+    SPI_Project_ID  =  NA_real_,
+    SPI_Project_name = "",
+    Date_Time = as.POSIXct(Datetime), 
+    Age = "",
+    Sex = "",
+    Date = as.Date(Date, format = "%Y-%m-%d")
+  )
+
+Inat_data <- Inat_data %>% standardize_species_names()
+table(Inat_data$Species_common_name)
 ```
 
-
-
-
-Attach incidentals to the Camera/DNA with metadata sheet
-
+17. Attach incidentals to the Camera/DNA with metadata sheet
 ```{r}
+##
  cams_dna_sp_meta$SPI_Project_ID <- cams_dna_sp_meta$SPI_Project_ID.x
-# 
-# # Remove unwanted columns from cams_dna_sp_meta
-# cams_dna_sp_meta <- cams_dna_sp_meta %>%
-#   select(-c(SPI_Project_ID.x, SPI_Project_ID.y))
+
 
 # Identify common columns between the two dataframes
 common_cols <- intersect(names(inci_spi_data), names(cams_dna_sp_meta))
@@ -1076,17 +1174,24 @@ common_cols <- intersect(names(inci_spi_data), names(cams_dna_sp_meta))
 # Retain only the common columns in inci_spi_data
 inci_spi_data <- inci_spi_data[, common_cols, drop = FALSE]
 
+## Same with the INat records
+# Identify common columns between the two dataframes
+common_cols <- intersect(names(inci_spi_data), names(Inat_data))
+
+# Retain only the common columns in inci_spi_data
+Inat_data <- Inat_data[, common_cols, drop = FALSE]
+
 # Bind rows, keeping only the common columns
-all_sources_species <- bind_rows(cams_dna_sp_meta, inci_spi_data, incidentals_clip)
+all_sources_species <- bind_rows(cams_dna_sp_meta, inci_spi_data, incidentals_clip, Inat_data)
 
 # Remove columns where all characters are uppercase
 all_sources_species <- all_sources_species %>%
-  select(-which(grepl("^[A-Z_]+$", names(.))))
+  dplyr::select(-which(grepl("^[A-Z_]+$", names(.))))
 
 
 # Remove unwanted columns from cams_dna_sp_meta
 all_sources_species <- all_sources_species %>%
-  select(-c(Species.x, Species.y))
+  dplyr::select(-c(Species.x, Species.y))
 
 
 # Remove rows where Species_common_name is "Mule deer" or "White-tailed deer"
@@ -1094,28 +1199,325 @@ all_sources_species <- all_sources_species %>%
   filter(!(Species_common_name %in% c("Mule deer", "White-tailed deer")))
 all_sources_species$SPI_Project_ID <- as.character(all_sources_species$SPI_Project_ID)
 
-### Clean up some names that got missed
 
+all_sources_species$Data_Sharing_Categorization <- ifelse(all_sources_species$Data_Sharing_Categorization =="Request Permission", "Request permission", all_sources_species$Data_Sharing_Categorization)
+
+### Save only records from > 2000 but keep NA dates
+all_sources_species <- all_sources_species %>%
+  filter(is.na(Date_Time) | Date_Time >= as.POSIXct("2000-01-01"))
+
+all_sources_species$Species <- all_sources_species$Species_common_name
+all_sources_species <- all_sources_species %>% standardize_species_names()
 table(all_sources_species$Species_common_name)
-
-all_sources_species$Species_common_name <- recode(all_sources_species$Species_common_name,
-        "Least Weasel"= "Least weasel",
-        "Mustela vison" = "American mink",
-        "Sylvilagus" = "Cottontail rabbit")
-
-table(all_sources_species$Species_scientific)
-
-all_sources_species$Species_scientific <- recode(all_sources_species$Species_scientific,
-        "Mustela vison" = "Neogale vison",
-        "Neovison vison" = "Neogale vison",
-        "FLSQ" = "Glaucomys sabrinus"
-        )
-
-write.csv(all_sources_species, file="All_sources_species_March2025.csv")        
 
 ```
 
-Let's map all Marten by data sharing permissions
+Rename Short-tailed weasel to Haida ermine for all records on Haida Gwaii
+Rename American Marten to Pacific Marten for all records on Haida Gwaii AND Vancouver Island
+Remove Wolverine and Canada lynx records (museum) from Vancouver Island
+Rename Long-tailed weasel  to Short-tailed weasel on the island (Long-tailed don't occur)
+```{r}
+## Rename Mustela richardsonii on Haida Gwaii to Mustela haidarum
+all_sources_species <- all_sources_species %>%
+  mutate(row_id = row_number())
+
+# Convert to sf, assign WGS84 CRS (4326) to your lon/lat columns
+all_sf <- all_sources_species %>%
+  filter(!is.na(Longitude) & !is.na(Latitude)) %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326)
+
+# Check CRS to confirm
+st_crs(all_sf)
+
+# 2. Load polygons in 4326
+haida_gwaii <- st_read("C:/LocalR/SDM_mesocarnivores/GIS/Haida_Gwaii.shp") %>%
+  st_transform(crs = 4326)
+
+van_isle <- st_read("C:/LocalR/SDM_mesocarnivores/GIS/Vancouver_Island.shp") %>%
+  st_transform(crs = 4326)
+
+# 3. Transform points and polygons to projected CRS (meters)
+all_sf_proj <- st_transform(all_sf, 3005)
+haida_gwaii_proj <- st_transform(haida_gwaii, 3005)
+van_isle_proj <- st_transform(van_isle, 3005)
+
+# 4. Calculate spatial relationships using projected data and meters
+all_sf_proj <- all_sf_proj %>%
+  mutate(
+    within_HG = lengths(st_is_within_distance(geometry, haida_gwaii_proj, dist = 2000)) > 0,
+    within_VI = lengths(st_is_within_distance(geometry, van_isle_proj, dist = 2000)) > 0,
+    on_HG_or_VI = within_HG | within_VI
+  )
+
+# 5. Rename species based on within_HG or on_HG_or_VI, etc.
+all_sf_proj <- all_sf_proj %>%
+  mutate(
+    Species_scientific = ifelse(within_HG & Species_scientific == "Mustela richardsonii",
+                                "Mustela haidarum", Species_scientific),
+    Species_common_name = ifelse(within_HG & Species_common_name == "Short-tailed weasel",
+                                 "Haida ermine", Species_common_name),
+    Species_scientific = ifelse(on_HG_or_VI & Species_scientific %in% c("Martes americana", "Martes sp."),
+                                "Martes caurina", Species_scientific),
+    Species_common_name = ifelse(on_HG_or_VI & Species_common_name %in% c("American marten", "Marten sp."),
+                                 "Pacific marten", Species_common_name),
+    Species_scientific = ifelse(within_VI & Species_scientific %in% c("Mustela frenanta", "Mustela sp."),
+                                "Mustela richardsonii", Species_scientific),
+    Species_common_name = ifelse(within_VI & Species_common_name %in% c("Long-tailed weasel", "Weasel sp."),
+                                 "Short-tailed weasel", Species_common_name)
+  )
+
+# 6. Join updated data back to original dataframe as before (using row_id)
+all_sf_clean <- all_sf_proj %>%
+  st_drop_geometry() %>%
+  select(row_id, Species_scientific, Species_common_name)
+
+all_sources_species_updated <- all_sources_species %>%
+  left_join(all_sf_clean, by = "row_id") %>%
+  mutate(
+    Species_scientific = coalesce(Species_scientific.y, Species_scientific.x),
+    Species_common_name = coalesce(Species_common_name.y, Species_common_name.x)
+  ) %>%
+  select(-Species_scientific.x, -Species_scientific.y,
+         -Species_common_name.x, -Species_common_name.y)
+
+all_sources_species_updated$Species_scientific <- ifelse(all_sources_species_updated$Species_scientific=="American mink", "Neogale vison", all_sources_species_updated$Species_scientific)
+
+
+### Filter out any remaining wolverines, Canada Lynx, Red Fox, Bobcat, American marten on Vancouver Island
+# STEP A: Identify suspect species
+suspect_species <- c("Wolverine", "Canada lynx", "Bobcat", "Red fox", "American marten")
+
+# STEP B: Filter valid coordinate rows and convert to sf
+all_sf <- all_sources_species_updated %>%
+  filter(!is.na(Longitude) & !is.na(Latitude)) %>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326)
+
+# STEP C: Load and transform Vancouver Island shapefile
+van_isle <- st_read("C:/LocalR/SDM_mesocarnivores/GIS/Vancouver_Island.shp") %>%
+  st_transform(crs = 4326)
+
+# STEP D: Flag points within 1 km of Vancouver Island
+all_sf <- all_sf %>%
+  mutate(
+    within_VI = lengths(st_is_within_distance(geometry, van_isle, dist = 2000)) > 0
+  )
+
+# STEP E: Extract suspect species on Vancouver Island
+vi_suspect_records <- all_sf %>%
+  filter(Species_common_name %in% suspect_species & within_VI)
+
+# STEP F: Drop geometry so you can inspect the records
+vi_suspect_df <- vi_suspect_records %>%
+  st_drop_geometry()
+
+# Check sources
+table(vi_suspect_df$Type_of_record)  # or View(vi_suspect_df) for a full look
+
+# Filter them out of the main dataframe
+all_sources_species <- all_sources_species_updated %>%
+  anti_join(vi_suspect_df, by = "row_id")
+
+########### One last removal of wonky outliers for badger, river otter, and raccoon ###########
+
+
+all_sources_species <- all_sources_species %>%
+  filter(!(Species_common_name == "Raccoon" & Latitude > 58)) %>%
+  filter(!(Species_common_name == "American badger" & Latitude > 54)) %>%
+ filter(!(Species_common_name == "North American river otter" & Longitude < -129))
+
+### One last check for names
+
+all_sources_species$Species <- all_sources_species$Species_common_name
+all_sources_species <-  all_sources_species %>% standardize_species_names()
+table(all_sources_species$Species_common_name)
+table(all_sources_species$Species_scientific)
+
+
+```
+
+
+Export all species and mesocarnivores only
+
+```{r}
+
+## Remove outliers outside of BC boundary
+# 1. Filter out missing coordinates
+all_sources_species <- all_sources_species %>%
+  filter(!is.na(Latitude), !is.na(Longitude))
+
+# 2. Keep original lat/lon as columns, convert to sf using WGS84
+all_species_sf_wgs84 <- st_as_sf(all_sources_species,
+                                 coords = c("Longitude", "Latitude"),
+                                 crs = 4326)
+
+# 3. Transform to BC Albers (EPSG:3005) for spatial operations
+all_species_sf <- st_transform(all_species_sf_wgs84, crs = 3005)
+
+# 4. Load BC boundary and transform to EPSG:3005
+bc_boundary <- ne_states(country = "Canada", returnclass = "sf") %>%
+  filter(name == "British Columbia") %>%
+  st_transform(crs = 3005)
+
+# 5. Add 5 km buffer around BC boundary
+bc_boundary_buffered <- st_buffer(bc_boundary, dist = 5000)
+
+# 6. Clip points to buffered boundary
+all_species_in_bc <- all_species_sf[st_intersects(all_species_sf, bc_boundary_buffered, sparse = FALSE), ]
+
+# 7. Extract BC Albers X/Y and restore original Lat/Lon
+coords_3005 <- st_coordinates(all_species_in_bc)
+coords_wgs84 <- st_coordinates(st_transform(all_species_in_bc, crs = 4326))
+
+all_species_in_bc <- all_species_in_bc %>%
+  mutate(
+    X = coords_3005[, 1],
+    Y = coords_3005[, 2],
+    Longitude = coords_wgs84[, 1],
+    Latitude = coords_wgs84[, 2]
+  )
+
+# 8. Convert to data frame
+all_species_in_bc_df <- st_drop_geometry(all_species_in_bc)
+
+
+
+### Save only records from > 2000 but keep NA dates. Keep only Mesocarnivore target species
+all_meso_species <- all_species_in_bc_df %>%
+  filter(is.na(Date_Time) | Date_Time >= as.POSIXct("2000-01-01")) %>%
+    filter(!Species_scientific %in% c("Canis lupus", "Enhydra lutris", "Sylvilagus floridanus","Urocyon cinereoargenteus", "Lepus sp.", "Scurius sp.", "Tamiasciurus hudsonicus", "Sciurus sp.", "Lepus americanus", "Erethizon dorsatum", "Glaucomys sabrinus", "Marmota sp.", "Marmota caligata", "Odocoileus virginianus", 
+                                      "Odocoileus hemionus")) %>%
+  filter(!Species_common_name %in% c("Gray fox", "Grey Wolf", "Fox sp.", "Flying squirrel", "North American porcupine", "White-tailed Deer"))
+
+table(all_meso_species$Species_common_name)
+table(all_meso_species$Species_scientific)
+
+
+## Create a version that combines martens 
+all_meso_species1 <- all_meso_species %>%
+  mutate(
+    Species_common_name = case_when(
+      Species_common_name %in% c("American marten", "Pacific marten", "Marten sp.") ~ "Martens",
+      TRUE ~ Species_common_name
+    ),
+    Species_scientific = case_when(
+      Species_scientific %in% c("Martes americana", "Martes caurina") ~ "Martes spp",
+      TRUE ~ Species_scientific
+    )
+  )
+
+## Check for duplicates and save
+
+# Drop duplicates before saving, keep same object names
+all_meso_species <- all_meso_species %>%
+  distinct(Species_common_name, Species_scientific, Latitude, Longitude, .keep_all = TRUE)
+
+all_meso_species1 <- all_meso_species1 %>%
+  distinct(Species_common_name, Species_scientific, Latitude, Longitude, .keep_all = TRUE)
+
+# Save the whole database
+write.csv(all_species_in_bc_df, file = "5. Master data cleaned/All_sources_species_Nov2025.csv")
+
+# Exclude non-target species
+# write.csv(all_meso_species, file = "All_sources_Mesospecies_Nov2025.csv")
+
+# Save the version with martens combined
+write.csv(all_meso_species1, file = "5. Master data cleaned/All_sources_targetmeso_Nov2025.csv")
+
+table(all_meso_species1$Species_common_name)
+
+
+```
+
+18. *Skip* Map all species detections - Note tmap dependency problems with latest version
+```{r}
+
+# Define file save location
+save_directory <- "9. Maps/Species_detections"
+
+# Define a single color (teal) for all species
+custom_color <- "#00796B"  # Dark Teal
+
+# Define custom shapes
+custom_shapes <- c("Level1" = 16, "Level2" = 17, "Level3" = 18)
+
+# Define target species
+target_species <- c("American badger", "American marten", "American mink", "Bobcat", 
+                    "Canada lynx", "Coyote", "Fisher", "Haida ermine", "Least weasel", 
+                    "Long-tailed weasel", "North American river otter", "Pacific marten", 
+                    "Raccoon", "Red fox", "Short-tailed weasel", "Snowshoe hare", 
+                    "Striped skunk", "Western spotted skunk", "Wolverine")
+
+# Filter dataset for target species
+filtered_species_data <- all_sources_species %>%
+  filter(Species_common_name %in% target_species)
+
+# Get unique species from filtered dataset
+species_list <- unique(filtered_species_data$Species_common_name)
+
+# Loop through each species and create maps
+for (species in species_list) {
+  
+  # Filter for current species, remove NA coordinates, and dplyr::select necessary columns
+  species_map_data <- filtered_species_data %>%
+    filter(Species_common_name == species) %>%
+    drop_na(Latitude, Longitude, Data_type) %>%
+    mutate(
+      Year_Study_Start = as.character(Year_Study_Start),
+      Year_Study_End = as.character(Year_Study_End)
+    ) %>%
+    dplyr::select(-c(Study_Area, Description, Start_Deployment_date, End_Deployment_date, Sex, Age, Habitat_type, Comments, Trap_type, Sample_ID, SPI_Project_name, Animal_ID, 
+              Submission_File_link, Submission_File_name, Data_owner_names, 
+              Owner_email, Data._Sharing_Notes, Date_Time, Count, Date, Station_ID, Wildtrax_ID, SPI_Project_Name)) %>%
+    st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326)
+
+  # Skip map creation if there is no data
+  if (nrow(species_map_data) == 0) {
+    print(paste("Skipping", species, "- No data available."))
+    next
+  }
+
+  # Rename Species_common_name to Species
+  species_map_data <- species_map_data %>%
+    rename(Species = Species_common_name)
+  
+  # Interactive map with OpenStreetMap
+  tmap_mode("view")
+  map <- tm_basemap("OpenStreetMap") +
+    tm_shape(species_map_data) +
+    tm_dots(col = custom_color, shape = "Data_type", 
+            size = 0.6, shape.palette = custom_shapes, 
+            title.shape = "Data type") +  
+    tm_layout(title = paste(species, "Detections in British Columbia"),
+              legend.outside = TRUE)
+
+  # Create file path and save map as an HTML file
+  file_name <- paste0("Map_", gsub(" ", "_", species), ".html")
+  file_path <- file.path(save_directory, file_name)
+  
+  tmap_save(map, filename = file_path)
+  
+  print(paste("Map saved:", file_path))
+}
+
+
+```
+
+19. *Skip* Extract species specific data observations (all) as its own csv file with latitude and longitude associated 
+```{r}
+# Extract coordinates
+species_map_data <- species_map_data %>%
+  mutate(Latitude = st_coordinates(.)[, 2],  # Extract Y (Latitude)
+         Longitude = st_coordinates(.)[, 1]) %>%  # Extract X (Longitude)
+  st_drop_geometry()  # Remove geometry column
+
+# View the new dataframe
+head(species_map_data)
+
+## Export
+write.csv(species_map_data, file="5. Master data cleaned/Species_detections_Nov2025.csv")
+```
+
+20. *Skip* Map a species by data sharing permissions
 ```{r}
 all_sources_species <- all_sources_species %>%
   mutate(across(everything(), ~ iconv(., from = "", to = "UTF-8", sub = " ")))  # Replace invalid characters
@@ -1138,7 +1540,7 @@ custom_shapes <- c("Level1" = 16,  # Filled circle
                    "Level2" = 17,  # Filled triangle
                    "Level3" = 18)  # Filled diamond
 
-# Filter for Marten species, remove NA coordinates, and select necessary columns
+# Filter for Marten species, remove NA coordinates, and dplyr::select necessary columns
 species_map_data <- all_sources_species %>%
   filter(Species_scientific %in% c("Martes caurina", "Martes sp.", "Martes americana")) %>%
   drop_na(Latitude, Longitude, Data_Sharing_Categorization) %>%  # Ensure no NAs in shape field
@@ -1146,7 +1548,7 @@ species_map_data <- all_sources_species %>%
     Year_Study_Start = as.character(Year_Study_Start),  # Convert to character to avoid comma formatting
     Year_Study_End = as.character(Year_Study_End)  # Convert to character to avoid comma formatting
   ) %>%
-  select(-c(Study_Area, Description, Start_Deployment_date, End_Deployment_date,  Age, Habitat_type, Comments, Trap_type, Sample_ID, SPI_Project_name, Animal_ID, 
+  dplyr::select(-c(Study_Area, Description, Start_Deployment_date, End_Deployment_date,  Age, Habitat_type, Comments, Trap_type, Sample_ID, SPI_Project_name, Animal_ID, 
             Submission_File_link, Submission_File_name, Data_owner_names, 
             Owner_email, Data._Sharing_Notes, Date, Station_ID, Wildtrax_ID, SPI_Project_Name)) %>%  # Remove specified columns
   st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326)  # Convert to sf spatial object
@@ -1189,76 +1591,381 @@ marten_detect <- species_map_data %>%
     (Year >= 2000 | Study_Year_End >= 2000)  # Keep records from 2000 onwards
   )
 
-write.csv(marten_detect, file="Marten_records_March2025.csv")
+write.csv(marten_detect, file="5. Master data cleaned/Species specific/Marten_records_Nov2025.csv")
 getwd()
 ```
-Map Fisher detections
+
+
+21. Make a multi panel occurrence plot by species
 
 ```{r}
-library(tmap)
+
+# ──────────────────────────────────────────────────────────────────────
+# Assume `all_meso_species` already exists with columns:
+#    Species_common_name (character/factor), Latitude (numeric), Longitude (numeric)
+# ──────────────────────────────────────────────────────────────────────
+# 1) Drop any rows with missing coordinates or missing species name
+ms <- all_meso_species1 %>%
+  filter(!is.na(Species_common_name),
+         Species_common_name!="Weasel sp.",
+        Species_common_name!="Lynx sp.",
+         !is.na(Latitude),
+         !is.na(Longitude))
+
+ms$Data_type <- ifelse(is.na(ms$Data_type), "Incidental", ms$Data_type)
+
+# 2) Convert to sf points (WGS84)
+points_sf <- st_as_sf(ms, coords = c("Longitude", "Latitude"), crs = 4326)
+
+# 3) For each species, count how many points; keep only those with ≥1
+species_counts <- points_sf %>%
+  st_drop_geometry() %>%
+  group_by(Species_common_name) %>%
+  tally(name = "n_points") %>%
+  filter(n_points > 0)
+
+# Filter points_sf to only species that actually appear
+points_sf <- points_sf %>%
+  filter(Species_common_name %in% species_counts$Species_common_name)
+
+# 4) Load BC boundary (WGS84)
+bc_boundary <- ne_states(country = "Canada", returnclass = "sf") %>%
+  filter(name == "British Columbia") %>%
+  st_transform(crs = 4326)
+
+# 5) Build the faceted ggplot
+p <- ggplot() +
+  # a) BC polygon
+  geom_sf(
+    data  = bc_boundary,
+    fill  = "grey95",
+    color = "black",
+    size  = 0.3
+  ) +
+  # b) Points (smaller size, semi‐transparent)
+  geom_sf(
+    data       = points_sf,
+    aes(color  = Species_common_name),
+    size       = 0.8,
+    alpha      = 0.6,
+    show.legend = FALSE
+  ) +
+  # c) Facet by species, drop empty facets, use 4 columns
+  facet_wrap(
+    ~ Species_common_name,
+    ncol   = 5,
+    scales = "fixed"
+  ) +
+  coord_sf(
+    crs    = 4326,
+    expand = FALSE
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    strip.text         = element_text(face = "bold", size = 16),
+    panel.grid.major   = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.title         = element_blank(),
+    axis.text          = element_blank(),
+    axis.ticks         = element_blank(),
+    panel.background   = element_rect(fill = "white", color = NA),
+    plot.title         = element_text(hjust = 0.5, size = 20, face = "bold")
+  ) +
+  labs(
+    title    = "Mesocarnivore Occurence in British Columbia"
+  )
+
+# 6) Display on screen
+print(p)
+
+# 7) Save to file with a more “rectangular” aspect ratio
+ggsave(
+  filename = "10. Figures multi panel/Multipanel_species_occurrence.jpeg",
+  plot     = p,
+  width    = 20,
+  height   = 12,
+  dpi      = 300
+)
+
+
+```
+
+21.2 Modify this multi panel to zoom in on haida gwaii for haida ermine
+```{r}
+library(ggplot2)
 library(sf)
 library(dplyr)
-library(viridis)
-library(tmap)
-# Define custom colors
-custom_colors <- c("Pekania pennanti" = "#00796B")  # Dark Teal
+library(patchwork)
+library(grid)  # For grob tools
+library(rnaturalearth)  # For ne_states
 
-# Define custom shapes
-custom_shapes <- c("Level1" = 16,  # Filled circle
-                   "Level2" = 17,  # Filled triangle
-                   "Level3" = 18)  # Filled diamond
+# 1) Drop rows with missing coordinates or species name
+ms <- all_meso_species1 %>%
+  filter(!is.na(Species_common_name),
+         Species_common_name != "Weasel sp.",
+         Species_common_name != "Lynx sp.",
+         !is.na(Latitude),
+         !is.na(Longitude))
 
-# Filter for Marten species, remove NA coordinates, and select necessary columns
-species_map_data <- all_sources_species %>%
-  filter(Species_scientific %in% c("Pekania pennanti")) %>%
-  drop_na(Latitude, Longitude, Data_Sharing_Categorization) %>%  # Ensure no NAs in shape field
-  mutate(
-    Year_Study_Start = as.character(Year_Study_Start),  # Convert to character to avoid comma formatting
-    Year_Study_End = as.character(Year_Study_End)  # Convert to character to avoid comma formatting
-  ) %>%
-  select(-c(Study_Area, Description, Start_Deployment_date, End_Deployment_date, Sex, Age, Habitat_type, Comments, Trap_type, Sample_ID, SPI_Project_name, Animal_ID, 
-            Submission_File_link, Submission_File_name, Data_owner_names, 
-            Owner_email, Data._Sharing_Notes, Date_Time, Count, Date, Station_ID, Wildtrax_ID, SPI_Project_Name)) %>%  # Remove specified columns
-  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326)  # Convert to sf spatial object
+ms$Data_type <- ifelse(is.na(ms$Data_type), "Incidental", ms$Data_type)
+ms$Data_type <- factor(ms$Data_type, levels = c("Incidental", "DNA", "Camera"))
 
 
-# Rename Species_scientific to Species in the dataset
-species_map_data <- species_map_data %>%
-  rename(Species = Species_scientific)
+# 2) Convert to sf points (WGS84)
+points_sf <- st_as_sf(ms, coords = c("Longitude", "Latitude"), crs = 4326)
 
-# Interactive map with OpenStreetMap
-tmap_mode("view")  # Enable interactive view mode
+# 3) Transform points to BC Albers EPSG:3005
+points_sf <- st_transform(points_sf, 3005)
 
-tm_basemap("OpenStreetMap") +
-  tm_shape(species_map_data) +
-  tm_dots(col = "Species", shape = "Data_Sharing_Categorization", 
-          size = 0.6, palette = custom_colors, shape.palette = custom_shapes, 
-          title.shape = "Data Permissions") +  # Shape legend title is working
-  tm_layout(title = "Fisher Detections in British Columbia",
-            legend.outside = TRUE)+ # Move legend outside for better visibility
-    tm_view(set.zoom.limits = c(5, 7))  # Adjust zoom limits
+points_sf <- points_sf %>%
+  arrange(Data_type)  # this will put Incidental first, then DNA, then Camera last
 
-## Summary table
+# 4) Keep only species with ≥1 point
+species_counts <- points_sf %>%
+  st_drop_geometry() %>%
+  count(Species_common_name, name = "n_points") %>%
+  filter(n_points > 0)
 
-table(species_map_data$Species_common_name, species_map_data$Data_type)              
+points_sf <- points_sf %>%
+  filter(Species_common_name %in% species_counts$Species_common_name)
+
+# 5) Load BC boundary and transform to EPSG:3005
+bc_boundary <- ne_states(country = "Canada", returnclass = "sf") %>%
+  filter(name == "British Columbia") %>%
+  st_transform(crs = 3005)
+
+# Helper function to create inset plot (also in EPSG:3005)
+make_inset_plot <- function(zoom_bbox) {
+  ggplot() +
+    geom_sf(data = bc_boundary, fill = "white", color = "black", size = 0.3) +
+    geom_sf(data = st_as_sfc(zoom_bbox), fill = NA, color = "red", linewidth = 0.8) +
+    coord_sf(crs = 3005, expand = FALSE) +
+    theme_void()
+}
+
+# Main plotting function
+make_occurrence_plot <- function(species_name, data_sf, show_legend = FALSE) {
+  pts <- data_sf %>% filter(Species_common_name == species_name)
+  xlim <- NULL
+  ylim <- NULL
+  boundary <- bc_boundary
+  inset_plot <- NULL
+
+  # Define zoom extents in EPSG:3005
+  if (species_name %in% c("Haida ermine", "Western spotted skunk") && nrow(pts) > 0) {
+    if (species_name == "Haida ermine") {
+      # Approximate Haida Gwaii bounds in WGS84:
+      # xlim = c(-133.4, -131.5), ylim = c(51.8, 54.4)
+      # Convert these corners to EPSG:3005 for filtering/plotting:
+      coords_wgs84 <- matrix(c(-133.4, 51.8,
+                               -131.5, 54.4), ncol = 2, byrow = TRUE)
+      coords_3005 <- st_transform(st_sfc(
+        st_point(coords_wgs84[1, ]),
+        st_point(coords_wgs84[2, ]),
+        crs = 4326), 3005)
+      xlim <- c(st_coordinates(coords_3005[[1]])[1], st_coordinates(coords_3005[[2]])[1])
+      ylim <- c(st_coordinates(coords_3005[[1]])[2], st_coordinates(coords_3005[[2]])[2])
+
+      # Make sure xlim and ylim are in increasing order
+      xlim <- sort(xlim)
+      ylim <- sort(ylim)
+      
+    } else {
+      bbox <- st_bbox(pts)
+      buffer <- 50000  # buffer in meters (e.g. 50 km)
+      xlim <- c(bbox["xmin"] - buffer, bbox["xmax"] + buffer)
+      ylim <- c(bbox["ymin"] - buffer, bbox["ymax"] + buffer)
+    }
+
+    if (!any(is.na(c(xlim, ylim)))) {
+      bbox_coords <- matrix(c(
+        xlim[1], ylim[1],
+        xlim[1], ylim[2],
+        xlim[2], ylim[2],
+        xlim[2], ylim[1],
+        xlim[1], ylim[1]
+      ), ncol = 2, byrow = TRUE)
+
+      bbox_polygon <- st_sfc(st_polygon(list(bbox_coords)), crs = 3005)
+      boundary <- suppressWarnings(st_crop(bc_boundary, bbox_polygon))
+      inset_plot <- make_inset_plot(st_bbox(bbox_polygon))
+    }
+  }
+
+  data_type_colors <- c(
+  "Camera" = "#800020",   # burgundy hex
+  "DNA" = "#DEB887",      # beige
+  "Incidental" = "#1f78b4"
+)
+
+   p <- ggplot() +
+    geom_sf(data = boundary, fill = "grey95", color = "black", size = 0.3) +
+    geom_sf(data = pts, aes(color = Data_type), size = 0.8, alpha = 0.6) +
+    scale_color_manual(values = data_type_colors) +
+    coord_sf(crs = 3005, expand = FALSE, xlim = xlim, ylim = ylim) +
+    labs(title = species_name, color = "Data type") +
+    theme_minimal(base_size = 13) +
+    theme(
+      plot.title = element_text(face = "bold", hjust = 0.5, size = 13),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.title = element_blank(),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      panel.background = element_rect(fill = "white", color = NA),
+      legend.position = ifelse(show_legend, "bottom", "none")
+    )
+
+
+  # Add inset (move Haida ermine inset to bottom left corner)
+  if (!is.null(inset_plot)) {
+    if (species_name == "Haida ermine") {
+      p <- p + inset_element(
+        inset_plot,
+        left = 0.05,
+        bottom = 0.05,
+        right = 0.65,
+        top = 0.65
+      )
+    } else {
+      p <- p + inset_element(
+        inset_plot,
+        left = 0.65,
+        bottom = 0.65,
+        right = 0.96,
+        top = 0.96
+      )
+    }
+  }
+
+  return(p)
+}
+
+# Get species list
+species_list <- sort(unique(points_sf$Species_common_name))
+
+occ_plots <- lapply(seq_along(species_list), function(i) {
+  make_occurrence_plot(species_list[i], points_sf, show_legend = (i == 1))
+})
+
+combined_occurrence_plot <- wrap_plots(occ_plots, ncol = 5, guides = "collect") &
+  theme(legend.position = "bottom")
+print(combined_occurrence_plot)
+
+
+# Optional save
+ ggsave("10. Figures multi panel/Multipanel_species_occurrence_zoomed.jpeg", combined_occurrence_plot, width = 20, height = 12, dpi = 300)
+
+
 ```
 
 
 
-
-Extract species specific data observations as its own csv file with latitude and longitude associated 
+22. Make a table of mesocarnivore detections and export it
 
 ```{r}
-# Extract coordinates
-species_map_data <- species_map_data %>%
-  mutate(Latitude = st_coordinates(.)[, 2],  # Extract Y (Latitude)
-         Longitude = st_coordinates(.)[, 1]) %>%  # Extract X (Longitude)
-  st_drop_geometry()  # Remove geometry column
+# install.packages("gt")
 
-# View the new dataframe
-head(species_map_data)
+library(dplyr)
+library(tidyr)
+library(gt)
 
-## Export
-setwd("C:/LocalR/Merge_datacollation_2025/Output_camera_detections")
-write.csv(species_map_data, file="Fisher_cam_detections_temp_March2025.csv")
+# Step 1: Filter and recode
+filtered_data <- all_meso_species1 %>%
+  filter(!is.na(Species_common_name)) %>%
+  filter(!Species_common_name %in% c("Lynx sp.", "Weasel sp.")) %>%
+  mutate(Data_type = replace_na(Data_type, "Incidental"))
+
+# Step 2: Count detections per species and data type
+species_counts <- filtered_data %>%
+  count(Species_common_name, Data_type) %>%
+  pivot_wider(names_from = Data_type, values_from = n, values_fill = 0)
+
+# Step 3: Count unique camera stations per species and data type
+station_counts <- filtered_data %>%
+  group_by(Species_common_name, Data_type) %>%
+  summarize(Sites = n_distinct(Station_ID), .groups = "drop") %>%
+  pivot_wider(names_from = Data_type, values_from = Sites, values_fill = 0)
+
+# Step 4: Join detection counts and site counts
+species_table <- species_counts %>%
+  left_join(station_counts, by = "Species_common_name", suffix = c("", "_Sites")) %>%
+  rename(Species = Species_common_name) %>%
+  mutate(
+    # Sum camera sites + DNA sites + incidental detections (not incidental sites)
+    `Total unique locations` = 
+      coalesce(Camera_Sites, 0) + coalesce(DNA_Sites, 0) + coalesce(Incidental, 0)
+  ) %>%
+  arrange(Species)
+
+
+# Note: Above, adjust the names if your actual columns differ; 
+# here assumed your data_type categories are exactly "Camera", "DNA", "Incidental"
+
+# Step 5: Format the table with clean lines
+last_row <- nrow(species_table)
+
+gt_table <- species_table %>%
+  gt() %>%
+  tab_header(
+    title = "Detection Records and Camera Sites by Species and Data Type"
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "all", color = "white"),
+    locations = cells_body()
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = c("top", "bottom"), color = "black", weight = px(1)),
+    locations = cells_column_labels(everything())
+  ) %>%
+  tab_style(
+    style = cell_borders(sides = "bottom", color = "black", weight = px(1)),
+    locations = cells_body(rows = last_row)
+  ) %>%
+  tab_options(
+    table.border.top.width = px(0),
+    table.border.bottom.width = px(0),
+    table_body.hlines.width = px(0),
+    table.font.size = 12,
+    heading.title.font.size = 14
+  )
+
+# View it
+gt_table
+
+## Number of unique projects
+n_distinct(all_meso_species$Project_name)
+
+#Number of observers identified
+n_distinct(all_meso_species$Observer_ID)
+
+gtsave(gt_table, "5. Master data cleaned/Summary tables/Meso_species_summary_table.docx")
 ```
+
+
+23. Extract summary of specific species records
+#Number of records by project name
+```{r}
+
+badgers <- all_sources_species %>% filter(Species_common_name=="American badger")
+unique_badgers <- badgers %>%
+  distinct(Latitude, Longitude, .keep_all = TRUE)
+
+unique_badgers$Year <- ifelse(unique_badgers$Year)
+
+unique_badgers <- unique_badgers %>%
+  mutate(Year = if_else(is.na(Year), year(Date), Year))
+
+table(unique_badgers$Year)
+
+## How many records since 2012
+unique_badgers$Date <- as.Date(unique_badgers$Date)
+
+new_records_since_2012 <- unique_badgers %>%
+  filter(Year > 2012) %>%
+  tally()
+
+write.csv(unique_badgers, file="5. Master data cleaned/Species specific/Unique_badger_records_2000_2025.csv")
+
+```
+
